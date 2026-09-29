@@ -1,0 +1,29 @@
+[project]
+name = "solarian-umi-skill"
+version = "0.1.0"
+description = "Run a UMI diffusion policy. Each policy is a yaml in the project's conf/."
+authors = [
+    {name = "Solarian Contributors", email = "solarian@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "solarian>=0.1.0",
+    "numpy",
+    "scipy",
+    "opencv-python",
+    "pyyaml",
+]
+
+[project.entry-points."solarian.skills"]
+umi = "solarian_umi_skill.skill:UMISkill"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["solarian_umi_skill*"]
+
+[tool.setuptools.package-data]
+solarian_umi_skill = ["templates/umi.yaml"]
