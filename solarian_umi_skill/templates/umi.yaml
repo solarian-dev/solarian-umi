@@ -14,6 +14,8 @@ policy_server_url: ${deployment.policy_server_url}
 policy_server:
   managed: false
   # The trained UMI checkpoint, as a path on the inference host.
+  # A task trained with conf/train-<task>.yaml writes
+  # models/<job_name>/checkpoints/latest.ckpt. Point this at that file.
   checkpoint: ${deployment.policy_checkpoint}
   host: 127.0.0.1
   port: 8001

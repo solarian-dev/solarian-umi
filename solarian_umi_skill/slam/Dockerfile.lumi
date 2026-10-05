@@ -1,0 +1,10 @@
+FROM chicheng/orb_slam3:latest
+
+# The first second after a relocalization (mnLastRelocFrameId + fps) rejects
+# a track under 30 inliers. Lumi matches the atlas at about 26, so that
+# second ends the clip. The IMU-initialized floor for the rest of the clip is 15.
+RUN sed -i \
+    's/mnLastRelocFrameId+mMaxFrames && mnMatchesInliers<30/mnLastRelocFrameId+mMaxFrames \&\& mnMatchesInliers<15/' \
+    /ORB_SLAM3/src/Tracking.cc \
+    && grep -q 'mnLastRelocFrameId+mMaxFrames && mnMatchesInliers<15' /ORB_SLAM3/src/Tracking.cc \
+    && cd /ORB_SLAM3/build && make -j"$(nproc)" gopro_slam

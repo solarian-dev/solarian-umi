@@ -1,0 +1,42 @@
+# Base config for local UMI training. solarian install copies this to
+# conf/train-umi.yaml once. Copy it per task and change job_name and
+# dataset_path; policy stays umi so every copy uses the same trainer.
+#
+#   conf/train-cup-arrange.yaml    job_name: cup_arrange
+#   solarian train --conf conf/train-cup-arrange
+#
+# Checkpoints are written to models/<job_name>/checkpoints/latest.ckpt.
+# Point the matching skill yaml (a copy of umi.yaml) at that file:
+#
+#   conf/cup_arrange.yaml
+#     policy_server.checkpoint: models/cup_arrange/checkpoints/latest.ckpt
+#
+#   UMISkill(params={"config": "cup_arrange.yaml"})
+#
+# dataset_path is the dataset.zarr.zip written by `solarian umi-slam`.
+
+policy: umi
+job_name: umi
+output_dir: null
+
+# Hydra config shipped in this plugin, without .yaml.
+config_name: train_diffusion_unet_timm_umi_cup_wild
+
+# This task's dataset. UMI reads it as task.dataset_path.
+dataset_path: null
+
+batch_size: 64
+num_epochs: 50
+num_workers: 8
+optimizer_lr: 3.0e-4
+
+logging:
+  mode: online
+  project: umi
+
+# Extra Hydra overrides, passed through to train.py. Quote values that
+# contain '='.
+#   - n_action_steps=8
+#   - training.resume=True
+#   - +training.init_from_ckpt='/path/epoch=0170.ckpt'
+overrides: []
