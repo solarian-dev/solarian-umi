@@ -21,8 +21,8 @@ policy:
   obs_encoder:
     # null: the ViT summary (CLS) token, as the exp8 checkpoints.
     # box_pool: CLS plus the patch tokens under the box, averaged, plus the
-    # box corners. Changes the conditioning width, so it trains from scratch
-    # (or from another box_pool checkpoint).
+    # box corners. Wider conditioning; a cls training.init_from_ckpt is
+    # widened with zero weights for the new inputs.
     feature_aggregation: null
 
 training:

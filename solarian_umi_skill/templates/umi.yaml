@@ -91,7 +91,8 @@ debug_image_max_dumps: 5
 # Override with a path, or pass gold=<path> to `solarian calibrate-umi-camera`.
 umi_gold_image: null
 # Directory for one .npz per inference (the policy's exact input, the raw chunk,
-# the TCP pose) that primarykey's scripts/diagnose read with --obs-dir.
+# the TCP pose) that primarykey's scripts/diagnose read with --obs-dir. Each
+# skill run writes a subfolder named by its start time.
 dump_policy_obs: null
 
 # ---- Arm collision geometry ------------------------------------------

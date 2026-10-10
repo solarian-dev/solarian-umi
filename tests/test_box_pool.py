@@ -2,10 +2,19 @@
 
 import pytest
 import torch
+from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
+from solarian_umi_skill.diffusion_policy.model.common.normalizer import (
+    LinearNormalizer,
+    SingleFieldLinearNormalizer,
+)
 from solarian_umi_skill.diffusion_policy.model.vision.timm_obs_encoder import (
     TimmObsEncoder,
     pool_box_tokens,
+    widen_cond_for_box_pool,
+)
+from solarian_umi_skill.diffusion_policy.policy.diffusion_unet_timm_policy import (
+    DiffusionUnetTimmPolicy,
 )
 
 
@@ -82,6 +91,43 @@ def test_box_pool_widens_the_conditioning_and_follows_the_box():
     corners = feat[:, 2 * width:2 * width + 5]
     assert corners[0].tolist() == pytest.approx([16 / 112 - 1, 16 / 112 - 1, 64 / 112 - 1, 64 / 112 - 1, 1.0])
     assert corners[1, 0] > 0 and corners[1, 4] == 1.0
+
+
+def _policy(feature_aggregation) -> DiffusionUnetTimmPolicy:
+    torch.manual_seed(0)
+    policy = DiffusionUnetTimmPolicy(
+        shape_meta=_shape_meta(),
+        noise_scheduler=DDPMScheduler(num_train_timesteps=4),
+        obs_encoder=_encoder(feature_aggregation),
+        diffusion_step_embed_dim=16,
+        down_dims=(16, 32),
+        n_groups=4,
+    ).eval()
+    normalizer = LinearNormalizer()
+    for key in ("camera0_rgb", "robot0_gripper_width", "bbox", "action"):
+        normalizer[key] = SingleFieldLinearNormalizer.create_identity()
+    policy.set_normalizer(normalizer)
+    return policy
+
+
+def test_widened_cls_checkpoint_predicts_the_same_actions():
+    cls_policy = _policy(None)
+    box_policy = _policy("box_pool")
+    state = cls_policy.state_dict()
+
+    widened = widen_cond_for_box_pool(state, box_policy.obs_encoder, box_policy.state_dict())
+    box_policy.load_state_dict(state)
+
+    # Two residual blocks per down level and per up level past the first, two mid.
+    assert widened == 8
+    obs = _obs([[16, 16, 64, 64], [160, 160, 208, 208]])
+    with torch.no_grad():
+        torch.manual_seed(1)
+        expected = cls_policy.predict_action(obs)["action"]
+        torch.manual_seed(1)
+        actual = box_policy.predict_action(obs)["action"]
+    assert torch.allclose(actual, expected, atol=1e-5)
+    assert widen_cond_for_box_pool(state, box_policy.obs_encoder, box_policy.state_dict()) == 0
 
 
 def test_box_pool_requires_a_mask_channel_box():

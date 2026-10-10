@@ -111,7 +111,9 @@ def test_resume_needs_the_run_latest_checkpoint(tmp_path, monkeypatch):
     started = []
     monkeypatch.setattr("solarian_umi_skill.training.run_training",
                         lambda cfg, out: started.append(train_overrides(cfg, out)))
-    trainer = UmiTrainer(_cfg(resume=True), output_dir=str(tmp_path))
+    dataset = tmp_path / "cup.zarr.zip"
+    dataset.write_bytes(b"")
+    trainer = UmiTrainer(_cfg(resume=True, dataset_path=str(dataset)), output_dir=str(tmp_path))
 
     with pytest.raises(FileNotFoundError, match="latest.ckpt"):
         trainer.train()
@@ -144,6 +146,81 @@ def test_pick_config_composes_with_the_box_and_the_selected_conditioning(tmp_pat
     assert composed.policy.obs_encoder.feature_aggregation == "box_pool"
     assert composed.training.num_epochs == 50
     assert composed.task.dataset.val_dataset_path == "side_val.zarr.zip"
+
+
+def _mix_cfg(**overrides) -> UmiTrainConfig:
+    data = dict(
+        policy="umi", job_name="mix", batch_size=128, num_train_steps=4000, steps_per_epoch=250,
+        datasets=[{"path": "side=1.zarr.zip", "weight": 0.7},
+                  {"path": "pile.zarr.zip", "weight": 0.3}],
+    )
+    data.update(overrides)
+    return UmiTrainConfig.model_validate(data)
+
+
+def test_step_budget_and_mix_become_hydra_overrides(tmp_path):
+    cmd = train_overrides(_mix_cfg(), str(tmp_path))
+
+    assert "task.dataset_path='side=1.zarr.zip'" in cmd
+    assert "training.num_epochs=16" in cmd
+    assert "+task.samples_per_epoch=32000" in cmd
+    assert ("+task.dataset_mix=[{path:'side=1.zarr.zip',weight:0.7},"
+            "{path:'pile.zarr.zip',weight:0.3}]") in cmd
+
+
+def test_a_single_dataset_entry_needs_no_mix(tmp_path):
+    cmd = train_overrides(
+        _mix_cfg(datasets=[{"path": "side.zarr.zip"}], num_train_steps=1000), str(tmp_path))
+
+    assert "task.dataset_path='side.zarr.zip'" in cmd
+    assert "training.num_epochs=4" in cmd
+    assert not any("dataset_mix" in o for o in cmd)
+
+
+@pytest.mark.parametrize("bad, match", [
+    ({"dataset_path": "a.zarr.zip"}, "not both"),
+    ({"num_epochs": 10}, "not both"),
+    ({"steps_per_epoch": None}, "go together"),
+    ({"datasets": []}, "at least one"),
+])
+def test_conflicting_data_or_budget_fields_are_rejected(bad, match):
+    with pytest.raises(ValueError, match=match):
+        _mix_cfg(**bad)
+
+
+def test_mix_config_composes(tmp_path):
+    from hydra import compose, initialize_config_dir
+    from hydra.core.global_hydra import GlobalHydra
+    from omegaconf import OmegaConf
+
+    from solarian_umi_skill.diffusion_policy.dataset_name import parse_dataset_field
+
+    OmegaConf.register_new_resolver("eval", eval, replace=True)
+    OmegaConf.register_new_resolver("parse_dataset_field", parse_dataset_field, replace=True)
+    GlobalHydra.instance().clear()
+    cfg = _mix_cfg(config_name="train_diffusion_unet_timm_umi_pick_bbox",
+                   bbox_conditioning="box_pool")
+    with initialize_config_dir(version_base=None, config_dir=str(config_dir())):
+        composed = compose(cfg.config_name, overrides=train_overrides(cfg, str(tmp_path)))
+    OmegaConf.resolve(composed)
+
+    assert composed.task.dataset.dataset_path == "side=1.zarr.zip"
+    assert [e.path for e in composed.task.dataset_mix] == ["side=1.zarr.zip", "pile.zarr.zip"]
+    assert [e.weight for e in composed.task.dataset_mix] == [0.7, 0.3]
+    assert composed.task.samples_per_epoch == 32000
+    assert composed.training.num_epochs == 16
+
+
+def test_missing_mix_dataset_does_not_start_training(tmp_path, monkeypatch):
+    def fail(*_a, **_k):
+        raise AssertionError("training should not start")
+
+    monkeypatch.setattr("solarian_umi_skill.training.run_training", fail)
+    side = tmp_path / "side.zarr.zip"
+    side.write_bytes(b"")
+    cfg = _mix_cfg(datasets=[{"path": str(side)}, {"path": str(tmp_path / "pile.zarr.zip")}])
+    with pytest.raises(FileNotFoundError, match="pile.zarr.zip"):
+        UmiTrainer(cfg, output_dir=str(tmp_path)).train()
 
 
 def test_missing_dataset_path_does_not_start_training(tmp_path, monkeypatch):

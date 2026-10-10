@@ -49,8 +49,9 @@ init_from_ckpt: null
 resume: false
 
 # cls: the ViT summary token (exp8 checkpoints).
-# box_pool: also the patch tokens under the box and its corners. Wider
-# conditioning, so it cannot start from a cls checkpoint; train from scratch.
+# box_pool: also the patch tokens under the box and its corners. A cls
+# init_from_ckpt is widened with zeros for the new inputs, so the network
+# starts as the checkpoint's function.
 bbox_conditioning: cls
 
 logging:

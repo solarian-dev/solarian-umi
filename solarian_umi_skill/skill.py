@@ -169,6 +169,7 @@ class UMISkill(Skill):
         self.umi_gold_image = cfg.get("umi_gold_image")
         self._debug_dump_count = 0
         self.dump_policy_obs = cfg.get("dump_policy_obs")
+        self._policy_obs_dump_dir: pathlib.Path | None = None
         self._policy_obs_dump_count = 0
 
         try:
@@ -607,12 +608,15 @@ class UMISkill(Skill):
 
         ``obs.<key>`` is exactly what the policy server received, ``raw_action``
         the chunk it returned, ``eef_pose`` the current TCP pose (position m +
-        rotation vector) in the robot base frame.
+        rotation vector) in the robot base frame. Each run writes into a
+        subfolder named by the time of its first inference.
         """
-        out = pathlib.Path(self.dump_policy_obs).expanduser()
-        out.mkdir(parents=True, exist_ok=True)
+        if self._policy_obs_dump_dir is None:
+            self._policy_obs_dump_dir = (
+                pathlib.Path(self.dump_policy_obs).expanduser() / time.strftime("%Y%m%d-%H%M%S"))
+            self._policy_obs_dump_dir.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
-            out / f"{self._policy_obs_dump_count:05d}.npz",
+            self._policy_obs_dump_dir / f"{self._policy_obs_dump_count:05d}.npz",
             **{f"obs.{key}": np.asarray(value) for key, value in obs_dict_np.items()},
             raw_action=np.asarray(raw_action),
             eef_pose=np.concatenate(

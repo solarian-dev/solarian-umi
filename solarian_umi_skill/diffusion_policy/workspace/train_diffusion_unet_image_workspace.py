@@ -772,13 +772,16 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         import shutil
         from solarian_umi_skill.diffusion_policy.policy.diffusion_unet_image_policy import DiffusionUnetImagePolicy
         from solarian_umi_skill.diffusion_policy.dataset.base_dataset import BaseImageDataset, BaseDataset
+        from solarian_umi_skill.diffusion_policy.dataset.umi_dataset import mix_sampler
         from solarian_umi_skill.diffusion_policy.env_runner.base_image_runner import BaseImageRunner
         from solarian_umi_skill.diffusion_policy.common.checkpoint_util import TopKCheckpointManager
         from solarian_umi_skill.diffusion_policy.common.json_logger import JsonLogger
         from solarian_umi_skill.diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
         from solarian_umi_skill.diffusion_policy.model.diffusion.ema_model import EMAModel
         from solarian_umi_skill.diffusion_policy.model.common.lr_scheduler import get_scheduler
+        from solarian_umi_skill.diffusion_policy.model.vision.timm_obs_encoder import widen_cond_for_box_pool
         from accelerate import Accelerator, DistributedDataParallelKwargs
+        import dill
 
         cfg = copy.deepcopy(self.cfg)
 
@@ -870,11 +873,17 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 # __init__ from the new cfg, not stored in state_dict),
                 # so a strict load of the BC ckpt's `model` and
                 # `ema_model` state_dicts produces no key mismatch.
-                self.load_checkpoint(
-                    path=init_path,
-                    exclude_keys=['optimizer'],
-                    include_keys=(),
-                )
+                payload = torch.load(init_path.open('rb'), pickle_module=dill)
+                if self.model.obs_encoder.feature_aggregation == 'box_pool':
+                    target = self.model.state_dict()
+                    for key in ('model', 'ema_model'):
+                        if key in payload['state_dicts']:
+                            widened = widen_cond_for_box_pool(
+                                payload['state_dicts'][key], self.model.obs_encoder, target)
+                            accelerator.print(
+                                f"box_pool: widened {widened} {key} conditioning weights "
+                                f"of {init_path.name}")
+                self.load_payload(payload, exclude_keys=['optimizer'], include_keys=())
                 # Force a clean restart of the schedule even though
                 # global_step/epoch were already 0 from __init__.
                 self.global_step = 0
@@ -992,12 +1001,40 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         dataset: BaseImageDataset
         dataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseImageDataset) or isinstance(dataset, BaseDataset)
-        train_dataloader = DataLoader(dataset, **cfg.dataloader)
+        # task.dataset_mix: [{path, weight}], the first entry being
+        # task.dataset_path. The others train on all their episodes;
+        # validation comes from the first.
+        dataset_mix = cfg.task.get('dataset_mix') or [
+            {'path': cfg.task.dataset_path, 'weight': 1.0}]
+        train_parts = [dataset] + [
+            hydra.utils.instantiate(
+                cfg.task.dataset, dataset_path=entry['path'],
+                val_dataset_path=None, val_ratio=0.0)
+            for entry in dataset_mix[1:]
+        ]
+        if len(train_parts) > 1 and parl_enabled:
+            raise RuntimeError(
+                "PA-RL caches are indexed by the frames of one dataset; "
+                "it cannot run with task.dataset_mix.")
+        samples_per_epoch = cfg.task.get('samples_per_epoch')
+        dataloader_kwargs = dict(cfg.dataloader)
+        if len(train_parts) > 1 or samples_per_epoch:
+            dataloader_kwargs.pop('shuffle', None)
+            dataloader_kwargs['sampler'] = mix_sampler(
+                [len(part) for part in train_parts],
+                [entry['weight'] for entry in dataset_mix],
+                samples_per_epoch)
+        train_dataloader = DataLoader(
+            torch.utils.data.ConcatDataset(train_parts) if len(train_parts) > 1 else dataset,
+            **dataloader_kwargs)
 
         # compute normalizer on the main process and save to disk
         normalizer_path = os.path.join(self.output_dir, 'normalizer.pkl')
         if accelerator.is_main_process:
-            normalizer = dataset.get_normalizer()
+            part_data = [part.normalizer_data() for part in train_parts]
+            normalizer = dataset.fit_normalizer({
+                key: np.concatenate([data[key] for data in part_data])
+                for key in part_data[0]})
             pickle.dump(normalizer, open(normalizer_path, 'wb'))
 
         # load normalizer on all processes
@@ -1007,7 +1044,8 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         # configure validation dataset
         val_dataset = dataset.get_validation_dataset()
         val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
-        print('train dataset:', len(dataset), 'train dataloader:', len(train_dataloader))
+        print('train dataset:', [len(part) for part in train_parts],
+              'train dataloader:', len(train_dataloader))
         print('val dataset:', len(val_dataset), 'val dataloader:', len(val_dataloader))
 
         self.model.set_normalizer(normalizer)

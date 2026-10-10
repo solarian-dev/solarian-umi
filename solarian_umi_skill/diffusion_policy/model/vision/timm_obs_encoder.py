@@ -147,6 +147,58 @@ def pool_box_tokens(
     return torch.cat([tokens[:, 0], box_mean, geometry], dim=1)
 
 
+def widen_cond_for_box_pool(state_dict: dict, encoder: "TimmObsEncoder",
+                            target_state_dict: dict) -> int:
+    """Fit a cls-conditioned policy state dict to ``encoder``'s box_pool width.
+
+    Each UNet ``cond_encoder`` Linear reads ``[diffusion step embedding |
+    obs features]``. Its cls-checkpoint columns move to where the CLS token
+    and the low-dim features sit in the wider box_pool features; the box-mean
+    and geometry columns start at zero. The backbone is unchanged, so the
+    widened policy predicts exactly what the checkpoint did until training
+    moves those weights.
+
+    Args:
+        state_dict: policy state dict from a cls checkpoint, edited in place.
+        encoder: the box_pool obs encoder of the policy being initialized.
+        target_state_dict: that policy's own state dict, for the widths.
+
+    Returns:
+        How many weights were widened. Weights already at the target width,
+        and ones whose width matches neither layout, are left for the strict
+        load to accept or reject.
+    """
+    obs_meta = encoder.shape_meta['obs']
+    columns = []
+    new_width = 0
+    for key in encoder.rgb_keys:
+        dim = encoder.key_model_map[key].num_features
+        frame_width = 2 * dim + 5 if key in encoder.bbox_mask_map else dim
+        for _ in range(obs_meta[key]['horizon']):
+            columns.extend(range(new_width, new_width + dim))
+            new_width += frame_width
+    for key in encoder.low_dim_keys:
+        size = obs_meta[key]['horizon'] * math.prod(obs_meta[key]['shape'])
+        columns.extend(range(new_width, new_width + size))
+        new_width += size
+    columns = torch.tensor(columns)
+
+    widened = 0
+    for name, weight in state_dict.items():
+        if not name.endswith('cond_encoder.1.weight'):
+            continue
+        target_cols = target_state_dict[name].shape[1]
+        step_dim = target_cols - new_width
+        if weight.shape[1] != step_dim + len(columns) or weight.shape[1] == target_cols:
+            continue
+        wide = weight.new_zeros(weight.shape[0], target_cols)
+        wide[:, :step_dim] = weight[:, :step_dim]
+        wide[:, step_dim + columns] = weight[:, step_dim:]
+        state_dict[name] = wide
+        widened += 1
+    return widened
+
+
 class MaskAwareImageTransform(nn.Module):
     """Apply geometric transforms to all channels, color transforms only to RGB.
 

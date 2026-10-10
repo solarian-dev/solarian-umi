@@ -85,10 +85,12 @@ self.start_skill(UMISkill(params={"config": "cup_arrange.yaml"}))
 
 `conf/train-umi-pick.yaml` (from `templates/train-umi-pick.yaml`) uses the same trainer with `config_name: train_diffusion_unet_timm_umi_pick_bbox`, which adds the target box as a mask channel. The dataset needs a per-frame `bbox` array.
 
-- `init_from_ckpt`: fine-tune from a checkpoint's weights. The optimizer, LR schedule and epoch count start fresh, and the normalizer is recomputed from `dataset_path`.
+- `init_from_ckpt`: fine-tune from a checkpoint's weights. The optimizer, LR schedule and epoch count start fresh, and the normalizer is recomputed from the training data.
+- `datasets`: instead of `dataset_path`, a list of `{path, weight}`. Each sample comes from entry `i` with probability `weight_i / sum(weights)`, whatever the entry's size, so a small set can be emphasized without copying it. Validation comes from the first entry (or `val_dataset_path`); the normalizer is fit on all of them.
+- `num_train_steps` and `steps_per_epoch`: instead of `num_epochs`, a budget in optimizer steps. Each epoch draws `steps_per_epoch` random batches, so it only sets how often validation, sampling and checkpoints run.
 - `resume`: continue an interrupted run from `models/<job_name>/checkpoints/latest.ckpt` at its next epoch. `num_epochs` stays the run's total.
 - `val_dataset_path`: a separate `.zarr.zip` used as the whole validation set; every episode of `dataset_path` trains. Unset, a random `val_ratio` (5%) of `dataset_path`'s episodes validates.
-- `bbox_conditioning`: `cls` conditions on the ViT summary token. `box_pool` also adds the mean of the patch tokens under the box and the box corners. `box_pool` widens the conditioning, so a `cls` checkpoint cannot initialize it.
+- `bbox_conditioning`: `cls` conditions on the ViT summary token. `box_pool` also adds the mean of the patch tokens under the box and the box corners. `box_pool` widens the conditioning. A `cls` checkpoint in `init_from_ckpt` still initializes it: its conditioning weights move to the CLS and low-dim positions and the new columns start at zero, so the widened network computes the same function as the checkpoint until training moves those weights.
 
 Command-line values that contain `=` need inner quotes:
 

@@ -137,9 +137,10 @@ def test_dump_policy_respects_max_dumps(tmp_path):
     assert not (tmp_path / "solarian_camera0_rgb_t1.png").exists()
 
 
-def test_dump_policy_obs_writes_one_npz_per_inference(tmp_path):
+def test_dump_policy_obs_writes_one_npz_per_inference_in_a_run_folder(tmp_path):
     skill = UMISkill.__new__(UMISkill)
     skill.dump_policy_obs = str(tmp_path / "obs")
+    skill._policy_obs_dump_dir = None
     skill._policy_obs_dump_count = 0
     obs_dict = {
         "camera0_rgb": np.full((1, 3, 224, 224), 0.5, np.float32),
@@ -156,7 +157,9 @@ def test_dump_policy_obs_writes_one_npz_per_inference(tmp_path):
     skill._dump_policy_obs(obs_dict, raw, env_obs=env_obs)
     skill._dump_policy_obs(obs_dict, raw, env_obs=env_obs)
 
-    files = sorted((tmp_path / "obs").glob("*.npz"))
+    runs = list((tmp_path / "obs").iterdir())
+    assert len(runs) == 1 and runs[0].is_dir()
+    files = sorted(runs[0].glob("*.npz"))
     assert [f.name for f in files] == ["00000.npz", "00001.npz"]
     with np.load(files[0]) as z:
         np.testing.assert_array_equal(z["obs.bbox"], obs_dict["bbox"])

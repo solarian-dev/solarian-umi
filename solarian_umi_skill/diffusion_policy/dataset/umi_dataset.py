@@ -70,6 +70,26 @@ def _try_load_rl_q_v(dataset_path: str):
         return None, None
 
 
+def mix_sampler(lengths, weights, num_samples: Optional[int]) -> torch.utils.data.Sampler:
+    """Sampler over a ConcatDataset of parts with ``lengths``.
+
+    A sample comes from part ``i`` with probability ``weights[i] /
+    sum(weights)`` whatever its length, so a small dataset can be drawn
+    often without copying it. A single part is drawn without replacement,
+    reshuffled on every pass. ``num_samples`` is the samples per epoch;
+    None is the total length.
+    """
+    if num_samples is None:
+        num_samples = int(sum(lengths))
+    if len(lengths) == 1:
+        return torch.utils.data.RandomSampler(range(lengths[0]), num_samples=num_samples)
+    per_sample = torch.cat([
+        torch.full((n,), w / sum(weights) / n, dtype=torch.double)
+        for n, w in zip(lengths, weights)
+    ])
+    return torch.utils.data.WeightedRandomSampler(per_sample, num_samples, replacement=True)
+
+
 class UmiDataset(BaseDataset):
     def __init__(self,
         shape_meta: dict,
@@ -425,9 +445,14 @@ class UmiDataset(BaseDataset):
         return val_set
     
     def get_normalizer(self, **kwargs) -> LinearNormalizer:
-        normalizer = LinearNormalizer()
+        return self.fit_normalizer(self.normalizer_data())
 
-        # enumerate the dataset and save low_dim data
+    def normalizer_data(self) -> Dict[str, np.ndarray]:
+        """The low-dim obs and actions of every training sample, ``(N, T, D)``.
+
+        Kept apart from :meth:`fit_normalizer` so several datasets can be
+        concatenated and fit as one.
+        """
         data_cache = {key: list() for key in self.lowdim_keys + ['action']}
         self.sampler.ignore_rgb(True)
         dataloader = torch.utils.data.DataLoader(
@@ -445,9 +470,16 @@ class UmiDataset(BaseDataset):
             data_cache[key] = np.concatenate(data_cache[key])
             assert data_cache[key].shape[0] == len(self.sampler)
             assert len(data_cache[key].shape) == 3
-            B, T, D = data_cache[key].shape
-            if not self.temporally_independent_normalization:
-                data_cache[key] = data_cache[key].reshape(B*T, D)
+        return data_cache
+
+    def fit_normalizer(self, data: Dict[str, np.ndarray]) -> LinearNormalizer:
+        """Normalizer for ``data`` shaped like :meth:`normalizer_data`."""
+        normalizer = LinearNormalizer()
+        data_cache = dict()
+        for key, value in data.items():
+            B, T, D = value.shape
+            data_cache[key] = value if self.temporally_independent_normalization \
+                else value.reshape(B*T, D)
 
         # action
         assert data_cache['action'].shape[-1] % self.num_robot == 0
