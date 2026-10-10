@@ -45,9 +45,11 @@ MOUNT_PRIOR_R_B_C = np.array(
 )
 
 SLAM_YAML_NAME = "lumi_slam.yaml"
-# Finger tags' depth in the camera frame, meters (GoPro gripper: 0.072).
-# Gripper width readings only keep tags within 8 mm of it.
-FINGER_TAG_Z_M = 0.063
+# Finger tags' depth in the camera frame, meters. The lens sits where the
+# GoPro's does, so this is the GoPro gripper's value; sessions recorded with
+# the lens 9 mm further forward need 0.063. Gripper width readings only keep
+# tags within 8 mm of it.
+FINGER_TAG_Z_M = 0.072
 # Pixels this far inside the coverage edge are dropped too: features on the
 # black border are fixed in the image and would vote for zero motion.
 COVERAGE_MARGIN_PX = 12

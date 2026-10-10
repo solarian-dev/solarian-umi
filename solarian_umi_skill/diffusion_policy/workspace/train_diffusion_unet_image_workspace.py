@@ -839,6 +839,12 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 if lastest_ckpt_path.is_file():
                     accelerator.print(f"Resuming from checkpoint {lastest_ckpt_path}")
                     self.load_checkpoint(path=lastest_ckpt_path)
+            # Checkpoints are saved after an epoch's training steps but before
+            # its end-of-epoch epoch / global_step increments.
+            if self.epoch > 0 or self.global_step > 0:
+                self.epoch += 1
+                self.global_step += 1
+                accelerator.print(f"Continuing at epoch {self.epoch}, step {self.global_step}")
         elif (
             hasattr(cfg.training, 'init_from_ckpt')
             and cfg.training.init_from_ckpt
@@ -1231,7 +1237,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         # training loop
         log_path = os.path.join(self.output_dir, 'logs.json.txt')
         with JsonLogger(log_path) as json_logger:
-            for local_epoch_idx in range(cfg.training.num_epochs):
+            for local_epoch_idx in range(self.epoch, cfg.training.num_epochs):
                 # ========= PA-RL: optional relabel pass ==========
                 # Runs at the start of each epoch where the cycle hits
                 # (epoch 0 included, so we bootstrap from the BC ckpt's

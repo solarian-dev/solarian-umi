@@ -17,6 +17,7 @@ dependencies = [
 
 [project.entry-points."solarian.skills"]
 umi = "solarian_umi_skill.skill:UMISkill"
+umi_pnp = "solarian_umi_skill.pnp_skill:UMIPnPSkill"
 
 [project.entry-points."solarian.trainers"]
 umi = "solarian_umi_skill.trainer:UmiTrainer"

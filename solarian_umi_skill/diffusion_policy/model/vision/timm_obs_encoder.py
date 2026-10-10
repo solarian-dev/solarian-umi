@@ -105,6 +105,48 @@ def rasterize_bbox_to_mask(bbox: torch.Tensor, H: int, W: int) -> torch.Tensor:
     return mask.reshape(*leading_shape, 1, H, W)
 
 
+def pool_box_tokens(
+    tokens: torch.Tensor,
+    mask: torch.Tensor,
+    grid_size: tuple,
+    num_prefix_tokens: int,
+) -> torch.Tensor:
+    """CLS token, the mean of the patch tokens under the box, and the box.
+
+    Args:
+        tokens: ``(N, num_prefix_tokens + gh * gw, D)`` final ViT tokens.
+        mask: ``(N, 1, H, W)`` box mask after the geometric transforms, so it
+            is aligned with the pixels the ViT saw. Resizing makes it soft.
+        grid_size: ``(gh, gw)`` patch grid.
+        num_prefix_tokens: leading non-patch tokens; index 0 is CLS.
+
+    Returns:
+        ``(N, 2 * D + 5)``: CLS, box-weighted patch mean, then
+        ``x0, y0, x1, y1`` in [-1, 1] of the transformed image and a valid
+        flag. An empty mask gives zeros for everything after CLS.
+    """
+    N, _, H, W = mask.shape
+    patches = tokens[:, num_prefix_tokens:]
+    weight = F.adaptive_avg_pool2d(mask.to(patches.dtype), grid_size).flatten(1)
+    total = weight.sum(dim=1, keepdim=True)
+    box_mean = (weight.unsqueeze(-1) * patches).sum(dim=1) / total.clamp_min(1e-6)
+
+    inside = mask[:, 0] > 0.5
+    cols = inside.any(dim=1)
+    rows = inside.any(dim=2)
+    valid = cols.any(dim=1)
+    xs = torch.arange(W, device=mask.device)
+    ys = torch.arange(H, device=mask.device)
+    x0 = torch.where(cols, xs, W).amin(dim=1)
+    x1 = torch.where(cols, xs, -1).amax(dim=1) + 1
+    y0 = torch.where(rows, ys, H).amin(dim=1)
+    y1 = torch.where(rows, ys, -1).amax(dim=1) + 1
+    corners = torch.stack([x0 / W, y0 / H, x1 / W, y1 / H], dim=1) * 2 - 1
+    valid_f = valid.to(patches.dtype).unsqueeze(1)
+    geometry = torch.cat([corners.to(patches.dtype) * valid_f, valid_f], dim=1)
+    return torch.cat([tokens[:, 0], box_mean, geometry], dim=1)
+
+
 class MaskAwareImageTransform(nn.Module):
     """Apply geometric transforms to all channels, color transforms only to RGB.
 
@@ -377,7 +419,18 @@ class TimmObsEncoder(ModuleAttrMixin):
         # downstream code (eval, loggers, debug tools) can introspect the
         # bbox integration mode without re-parsing shape_meta.
         self.bbox_mask_map = bbox_mask_map
-        if model_name.startswith('vit'):
+        if self.feature_aggregation == 'box_pool':
+            if not model_name.startswith('vit'):
+                raise RuntimeError(
+                    f"feature_aggregation=box_pool needs a ViT encoder, got {model_name}.")
+            if not bbox_mask_map:
+                raise RuntimeError(
+                    "feature_aggregation=box_pool pools the patch tokens under "
+                    "the target box, so shape_meta needs a bbox entry with "
+                    "bbox_mode=mask_channel.")
+            self.vit_grid_size = tuple(model.patch_embed.grid_size)
+            self.vit_num_prefix_tokens = model.num_prefix_tokens
+        elif model_name.startswith('vit'):
             # assert self.feature_aggregation is None # vit uses the CLS token
             if self.feature_aggregation == 'all_tokens':
                 # Use all tokens from ViT
@@ -417,9 +470,12 @@ class TimmObsEncoder(ModuleAttrMixin):
             "number of parameters: %e", sum(p.numel() for p in self.parameters())
         )
 
-    def aggregate_feature(self, feature):
+    def aggregate_feature(self, feature, mask=None):
         if self.model_name.startswith('vit'):
-            assert self.feature_aggregation is None # vit uses the CLS token
+            if self.feature_aggregation == 'box_pool' and mask is not None:
+                return pool_box_tokens(
+                    feature, mask, self.vit_grid_size, self.vit_num_prefix_tokens)
+            assert self.feature_aggregation in (None, 'box_pool')
             return feature[:, 0, :]
         
         # resnet
@@ -485,7 +541,8 @@ class TimmObsEncoder(ModuleAttrMixin):
             img = img.reshape(B*T, *img.shape[2:])
             img = self.key_transform_map[key](img)
             raw_feature = self.key_model_map[key](img)
-            feature = self.aggregate_feature(raw_feature)
+            mask = img[:, 3:4] if key in self.bbox_mask_map else None
+            feature = self.aggregate_feature(raw_feature, mask)
             assert len(feature.shape) == 2 and feature.shape[0] == B * T
             features.append(feature.reshape(B, -1))
 

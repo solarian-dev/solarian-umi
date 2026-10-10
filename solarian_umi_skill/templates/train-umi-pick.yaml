@@ -1,0 +1,62 @@
+# Point-and-pick training (UMIPnPSkill). solarian install copies this to
+# conf/train-umi-pick.yaml once. Same trainer as train-umi.yaml; the config
+# adds the target box as a 4th image channel (bbox_mode: mask_channel).
+#
+#   solarian train --conf conf/train-umi-pick
+#
+# dataset_path needs a `bbox` array per frame: run primarykey
+# scripts/track_zarr.py --backwards --save on the SLAM dataset first.
+# Checkpoints land in models/<job_name>/checkpoints/; point umi_pnp.yaml's
+# policy_server.checkpoint (deployment.pnp_policy_checkpoint) at one.
+
+policy: umi
+job_name: umi_pick
+# Run folder: checkpoints go to <output_dir>/checkpoints/, beside
+# logs.json.txt and normalizer.pkl. null is models/<job_name>. A ViT-L
+# checkpoint is about 3 GB (6 GB with resume, which also saves the optimizer).
+output_dir: null
+
+config_name: train_diffusion_unet_timm_umi_pick_bbox
+
+dataset_path: null
+
+# Episodes kept out of dataset_path, as their own .zarr.zip (bbox tracked,
+# mirrored like the training set). val_loss is computed on them and every
+# episode of dataset_path trains. null: a random 5% of dataset_path's
+# episodes, which splits mirror twins and duplicated episodes across both.
+val_dataset_path: null
+
+# The exp8 run used 128 per GPU on 4 GPUs. Lower it if the GPU runs out of
+# memory (train-packaging uses 32 on a 24 GB card).
+batch_size: 32
+num_epochs: 250
+num_workers: 8
+optimizer_lr: 3.0e-4
+
+# Fine-tuning: set to an existing pick checkpoint. Weights only; optimizer,
+# LR schedule and epochs restart. Train on old + new episodes so the
+# recomputed normalizer and the data mix stay close to the original run.
+# Budget by samples seen, not epochs: exp8 saw about 17M (170 epochs x 100k
+# samples at batch 512, lr 3e-4). About 3M is enough for a fine-tune, about
+# 15 epochs of a 190k-sample merged set. Keep optimizer_lr / batch_size near
+# 1e-6 (batch 32: 3e-5 to 5e-5). Checkpoint every epoch, ranked by val_loss:
+#   overrides: [training.checkpoint_every=1, training.sample_every=1,
+#               checkpoint.topk.monitor_key=val_loss]
+init_from_ckpt: null
+
+# Continue an interrupted run from models/<job_name>/checkpoints/latest.ckpt
+# at its next epoch; num_epochs stays the run's total.
+resume: false
+
+# cls: the ViT summary token (exp8 checkpoints).
+# box_pool: also the patch tokens under the box and its corners. Wider
+# conditioning, so it cannot start from a cls checkpoint; train from scratch.
+bbox_conditioning: cls
+
+logging:
+  mode: online
+  project: umi
+
+# Extra Hydra overrides. Quote values that contain '='.
+#   - training.checkpoint_every=5
+overrides: []

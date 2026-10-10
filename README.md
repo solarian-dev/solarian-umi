@@ -30,7 +30,7 @@ self.start_skill(UMISkill(params={"config": "cup_arrange.yaml"}))
 
 `config` is a filename in `conf/`, or a path. `arm`, `gripper`, and `camera` come from the file; pass them in `params` only to override it. Any other key in `params` overrides the same key in the file.
 
-The skill runs on the robot (`execution_place` is `ROBOT`), so the controller sends `START_SKILL` with name `umi` and those params. One `UMISkill` runs at a time; a different file restarts it.
+The skill runs on the robot by default; set `execution_place: server` in the file to run it on the relay. On the robot, the controller sends `START_SKILL` with name `umi` and those params. One `UMISkill` runs at a time; a different file restarts it.
 
 Serve the checkpoint named in the file:
 
@@ -39,6 +39,23 @@ solarian run-policy umi --config cup_arrange.yaml
 ```
 
 With no `--config`, `run-policy` reads `conf/umi.yaml`.
+
+## Point and pick
+
+`UMIPnPSkill` runs a UMI checkpoint trained with a target box (`obs.bbox` with `bbox_mode: mask_channel`): the box is drawn as a fourth mask channel over `camera0_rgb`. Its config is `conf/umi_pnp.yaml`, the same keys as `conf/umi.yaml` plus:
+
+- `execution_place`: `server` or `robot`, from a required deployment key (`pnp_execution_place` in the template).
+- `bbox_field`: the camera's calculated field holding the box in capture pixels, default `bbox`.
+
+```python
+from solarian_umi_skill import UMIPnPSkill
+
+self.start_skill(UMIPnPSkill(params={"config": "umi_pnp.yaml"}))
+```
+
+The box usually comes from a tracker service such as `solarian-sam2-tracker`, seeded when the operator clicks the object (`self.start_service(camera, "bbox", point=...)`). Before a target is set the field is all zeros and the policy gets the whole frame as its box, the placeholder it was trained with. The skill maps the box through the same remap, resize and crop as the frame.
+
+On the server, the skill sits beside the tracker and the robot only captures and executes. On the robot, the bbox field must also be computed on the robot (`execution_place: robot` in its conf); `setup` refuses a robot-hosted skill reading a server-computed box, because that field never reaches the robot. Point both confs at one deployment key so they cannot disagree.
 
 ## Train
 
@@ -62,6 +79,23 @@ Checkpoints are written to `models/<job_name>/checkpoints/latest.ckpt`. Set that
 
 ```python
 self.start_skill(UMISkill(params={"config": "cup_arrange.yaml"}))
+```
+
+### Point-and-pick training
+
+`conf/train-umi-pick.yaml` (from `templates/train-umi-pick.yaml`) uses the same trainer with `config_name: train_diffusion_unet_timm_umi_pick_bbox`, which adds the target box as a mask channel. The dataset needs a per-frame `bbox` array.
+
+- `init_from_ckpt`: fine-tune from a checkpoint's weights. The optimizer, LR schedule and epoch count start fresh, and the normalizer is recomputed from `dataset_path`.
+- `resume`: continue an interrupted run from `models/<job_name>/checkpoints/latest.ckpt` at its next epoch. `num_epochs` stays the run's total.
+- `val_dataset_path`: a separate `.zarr.zip` used as the whole validation set; every episode of `dataset_path` trains. Unset, a random `val_ratio` (5%) of `dataset_path`'s episodes validates.
+- `bbox_conditioning`: `cls` conditions on the ViT summary token. `box_pool` also adds the mean of the patch tokens under the box and the box corners. `box_pool` widens the conditioning, so a `cls` checkpoint cannot initialize it.
+
+Command-line values that contain `=` need inner quotes:
+
+```bash
+solarian train --conf conf/train-umi-pick dataset_path=datasets/pick.zarr.zip
+solarian train --conf conf/train-umi-pick dataset_path=datasets/pick.zarr.zip \
+    "init_from_ckpt='models/pick/epoch=0170.ckpt'" optimizer_lr=1e-4 num_epochs=80
 ```
 
 ## SLAM

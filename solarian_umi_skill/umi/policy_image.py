@@ -90,6 +90,35 @@ class PolicyImagePipeline:
             )
         return out
 
+    def bbox(self, bbox, frame_hw: tuple[int, int], warp=None) -> np.ndarray:
+        """A capture-pixel box as the policy sees it: ``[x0, y0, x1, y1]`` float32.
+
+        The box is drawn as a mask and sent through the same ``warp`` (the
+        optical remap, which is not linear) and :meth:`resize` as the frame,
+        so it covers what it covered before. An empty box, or one the crop
+        removes, becomes the whole policy frame: the placeholder the
+        mask-channel policy was trained on for "no target".
+        """
+        import cv2
+
+        ow, oh = self.output_res
+        full = np.array([0, 0, ow, oh], dtype=np.float32)
+        h, w = frame_hw
+        x0, y0, x1, y1 = (int(v) for v in np.asarray(bbox).reshape(4))
+        x0, x1 = max(0, x0), min(w, x1)
+        y0, y1 = max(0, y0), min(h, y1)
+        if x1 <= x0 or y1 <= y0:
+            return full
+        mask = np.zeros((h, w, 3), dtype=np.uint8)
+        mask[y0:y1, x0:x1] = 255
+        if warp is not None:
+            mask = warp(mask)
+        mask = self.resize(mask[None])[0][..., 0]
+        x, y, bw, bh = cv2.boundingRect((mask > 127).astype(np.uint8))
+        if bw <= 0 or bh <= 0:
+            return full
+        return np.array([x, y, x + bw, y + bh], dtype=np.float32)
+
     def __call__(self, images: np.ndarray) -> np.ndarray:
         return self.mask(self.resize(images))
 

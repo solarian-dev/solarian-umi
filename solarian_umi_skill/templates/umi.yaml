@@ -90,6 +90,9 @@ debug_image_max_dumps: 5
 # Default is the gold PNG shipped in solarian (GoPro Hero 10 + Max Lens Mod policy crop).
 # Override with a path, or pass gold=<path> to `solarian calibrate-umi-camera`.
 umi_gold_image: null
+# Directory for one .npz per inference (the policy's exact input, the raw chunk,
+# the TCP pose) that primarykey's scripts/diagnose read with --obs-dir.
+dump_policy_obs: null
 
 # ---- Arm collision geometry ------------------------------------------
 # Where the arm may not go, which is a property of this table and this task,

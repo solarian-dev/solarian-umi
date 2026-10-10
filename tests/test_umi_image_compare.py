@@ -99,6 +99,28 @@ def test_dump_policy_writes_directory(tmp_path):
     assert "shape=(1, 3, 224, 224)" in (tmp_path / "summary.txt").read_text()
 
 
+def test_dump_policy_draws_the_box_the_policy_was_sent(tmp_path):
+    import cv2
+
+    skill = UMISkill.__new__(UMISkill)
+    skill.debug_image_path = str(tmp_path)
+    skill.debug_image_max_dumps = 5
+    skill.umi_gold_image = None
+    skill._debug_dump_count = 0
+    skill.observations = {}
+    rgb = np.zeros((1, 3, 224, 224), dtype=np.float32)
+
+    skill._dump_policy_input_image(
+        {"camera0_rgb": rgb, "bbox": np.array([[72, 99, 85, 116]], np.float32)},
+        {"camera0_rgb": np.zeros((1, 224, 224, 3), np.uint8)},
+    )
+
+    img = cv2.imread(str(tmp_path / "solarian_camera0_rgb_t0.png"))
+    red = img[..., 2] > 127
+    ys, xs = np.nonzero(red)
+    assert [xs.min(), ys.min(), xs.max() + 1, ys.max() + 1] == [72, 99, 85, 116]
+
+
 def test_dump_policy_respects_max_dumps(tmp_path):
     skill = UMISkill.__new__(UMISkill)
     skill.debug_image_path = str(tmp_path)
@@ -113,6 +135,35 @@ def test_dump_policy_respects_max_dumps(tmp_path):
     skill._dump_policy_input_image(obs, obs)
     assert (tmp_path / "solarian_camera0_rgb_t0.png").is_file()
     assert not (tmp_path / "solarian_camera0_rgb_t1.png").exists()
+
+
+def test_dump_policy_obs_writes_one_npz_per_inference(tmp_path):
+    skill = UMISkill.__new__(UMISkill)
+    skill.dump_policy_obs = str(tmp_path / "obs")
+    skill._policy_obs_dump_count = 0
+    obs_dict = {
+        "camera0_rgb": np.full((1, 3, 224, 224), 0.5, np.float32),
+        "bbox": np.array([[72, 99, 85, 116]], np.float32),
+        "robot0_eef_pos": np.zeros((2, 3), np.float32),
+    }
+    env_obs = {
+        "robot0_eef_pos": np.array([[0.0, 0.0, 0.0], [0.30, -0.05, 0.12]]),
+        "robot0_eef_rot_axis_angle": np.array([[0.0, 0.0, 0.0], [3.1, 0.0, 0.1]]),
+        "timestamp": np.array([1.0, 1.1]),
+    }
+    raw = np.ones((16, 10), np.float32)
+
+    skill._dump_policy_obs(obs_dict, raw, env_obs=env_obs)
+    skill._dump_policy_obs(obs_dict, raw, env_obs=env_obs)
+
+    files = sorted((tmp_path / "obs").glob("*.npz"))
+    assert [f.name for f in files] == ["00000.npz", "00001.npz"]
+    with np.load(files[0]) as z:
+        np.testing.assert_array_equal(z["obs.bbox"], obs_dict["bbox"])
+        np.testing.assert_array_equal(z["obs.camera0_rgb"], obs_dict["camera0_rgb"])
+        np.testing.assert_array_equal(z["raw_action"], raw)
+        np.testing.assert_allclose(z["eef_pose"], [0.30, -0.05, 0.12, 3.1, 0.0, 0.1])
+        assert float(z["timestamp"]) == 1.1
 
 
 def _pipeline_skill(*, letterbox: bool = True):

@@ -4,10 +4,10 @@
 # Licensed under the MIT License. The full text is LICENSE.umi
 # beside this package.
 
-from diffusers.optimization import (
-    Union, SchedulerType, Optional,
-    Optimizer, TYPE_TO_SCHEDULER_FUNCTION
-)
+from typing import Optional, Union
+
+from diffusers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
+from torch.optim import Optimizer
 
 def get_scheduler(
     name: Union[str, SchedulerType],

@@ -89,6 +89,11 @@ class UMISkill(Skill):
         for key in ("arm", "gripper", "camera"):
             if key not in self.params and key in cfg:
                 self.params[key] = cfg[key]
+        # Where to run is deployment config, so the same policy can be timed
+        # on the robot and on the relay without a code change. A host that
+        # constructs the skill to run it passes its own place, which wins.
+        if kwargs.get("execution_place") is None and cfg.get("execution_place"):
+            self.execution_place = ExecutionPlace(str(cfg["execution_place"]).lower())
 
     @classmethod
     def resolve_config_path(cls, config: str) -> pathlib.Path:
@@ -163,6 +168,8 @@ class UMISkill(Skill):
         self.debug_image_max_dumps = int(cfg.get("debug_image_max_dumps", 5))
         self.umi_gold_image = cfg.get("umi_gold_image")
         self._debug_dump_count = 0
+        self.dump_policy_obs = cfg.get("dump_policy_obs")
+        self._policy_obs_dump_count = 0
 
         try:
             model_info = self.policy_client.get_model_info()
@@ -241,6 +248,9 @@ class UMISkill(Skill):
         self._obs_age = LatencyEma()
         self._pipeline = LatencyEma()
         self._t_buffers_ms = 0.0
+        #: Planned arm waypoints already past when the chunk was scheduled,
+        #: summed over the run. The cost of where this skill runs, in steps.
+        self._dropped_waypoints = 0
 
         self.policy_client.reset()
         self._wait_for_obs()
@@ -592,6 +602,26 @@ class UMISkill(Skill):
             out_path = path.with_name(path.stem + suffix + path.suffix)
         self._write_rgb_strip(out_path, frames)
 
+    def _dump_policy_obs(self, obs_dict_np: dict, raw_action, env_obs: dict) -> None:
+        """One ``.npz`` per inference for primarykey's ``scripts/diagnose``.
+
+        ``obs.<key>`` is exactly what the policy server received, ``raw_action``
+        the chunk it returned, ``eef_pose`` the current TCP pose (position m +
+        rotation vector) in the robot base frame.
+        """
+        out = pathlib.Path(self.dump_policy_obs).expanduser()
+        out.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            out / f"{self._policy_obs_dump_count:05d}.npz",
+            **{f"obs.{key}": np.asarray(value) for key, value in obs_dict_np.items()},
+            raw_action=np.asarray(raw_action),
+            eef_pose=np.concatenate(
+                [env_obs["robot0_eef_pos"][-1], env_obs["robot0_eef_rot_axis_angle"][-1]]
+            ),
+            timestamp=float(env_obs["timestamp"][-1]),
+        )
+        self._policy_obs_dump_count += 1
+
     def _dump_policy_input_image(self, obs_dict_np: dict, env_obs: dict) -> None:
         """Dump the policy input image plus raw / masked siblings for debugging."""
         path = self._resolve_debug_path()
@@ -601,7 +631,7 @@ class UMISkill(Skill):
             return
 
         try:
-            import cv2  # noqa: F401
+            import cv2
         except ImportError:
             logger.warning(
                 "debug_image_path set but cv2 is unavailable; skipping dump"
@@ -635,7 +665,14 @@ class UMISkill(Skill):
                 )
                 frames = np.clip(arr, 0.0, 1.0)
                 frames = (frames * 255.0).astype(np.uint8)
-                frames = np.moveaxis(frames, 1, -1)
+                frames = np.ascontiguousarray(np.moveaxis(frames, 1, -1))
+                boxes = obs_dict_np.get("bbox")
+                if boxes is not None:
+                    # The 4th channel the policy rasterizes: exclusive x1/y1.
+                    for frame, box in zip(frames, np.asarray(boxes).reshape(-1, 4)):
+                        x0, y0, x1, y1 = (int(round(float(v))) for v in box)
+                        cv2.rectangle(frame, (x0, y0), (x1 - 1, y1 - 1), (255, 0, 0), 1)
+                    logger.info("policy bbox: %s", np.asarray(boxes).reshape(-1, 4).tolist())
                 policy_hwc = frames
                 if is_dir:
                     out = path / f"solarian_camera0_rgb_t{dump_idx}.png"
@@ -821,9 +858,13 @@ class UMISkill(Skill):
         # Into GoPro optics first: the masks and the 224 crop below are both
         # defined in that plane, and the capture path leaves frames in the
         # camera's own.
-        remap = self._ensure_camera_remap((images.shape[2], images.shape[1]))
+        frame_hw = (images.shape[1], images.shape[2])
+        remap = self._ensure_camera_remap((frame_hw[1], frame_hw[0]))
         if remap is not None:
             images = np.stack([remap.apply(frame) for frame in images], axis=0)
+        extras = self._camera_obs_extras(
+            [cam_hist[i] for i in cam_idxs], frame_hw, remap
+        )
 
         # Match UMI eval: square 224×224, then gripper/mirror polygons.
         images = self._resize_to_policy(images)
@@ -876,7 +917,18 @@ class UMISkill(Skill):
             "robot0_eef_rot_axis_angle": eef_rot,
             "robot0_gripper_width": gripper_aligned,
             "timestamp": camera_obs_timestamps,
+            **extras,
         }
+
+    def _camera_obs_extras(self, frames: list, frame_hw: tuple[int, int], remap) -> dict:
+        """Policy inputs read off the camera observations the frames came from.
+
+        ``frames`` are the camera ``ModuleObs`` picked for the image horizon,
+        in that order; ``frame_hw`` is their capture size and ``remap`` the
+        optical warp applied to them, or None. The base policy needs nothing
+        more.
+        """
+        return {}
 
     # ------------------------------------------------------------------
     # Action handling
@@ -967,6 +1019,8 @@ class UMISkill(Skill):
         t_predict = time.perf_counter()
         _, raw_action = self.policy_client.predict_with_raw(obs_dict_np)
         predict_ms = (time.perf_counter() - t_predict) * 1000.0
+        if self.dump_policy_obs:
+            self._dump_policy_obs(obs_dict_np, raw_action, env_obs=obs)
         action = get_real_umi_action(raw_action, obs, self.action_pose_repr)
         cmd_m = float(action[0, 6]) if action.size else float("nan")
         obs_m = float(obs["robot0_gripper_width"][-1])
@@ -1084,6 +1138,11 @@ class UMISkill(Skill):
             "UMI chunk",
             f"arm {arm_n}/{n_planned} first {arm_lead_ms:+.0f} ms, "
             f"gripper {grip_n}/{n_planned} first {grip_lead_ms:+.0f} ms",
+        )
+        self._dropped_waypoints += n_planned - arm_n
+        StatusBoard.set(
+            f"UMI dropped waypoints ({self.execution_place.value})",
+            self._dropped_waypoints,
         )
         # Reads as: the policy never asks low enough -> the camera-to-fingertip
         # lever arm is wrong (`solarian calibrate-hand-eye`); it asks low but

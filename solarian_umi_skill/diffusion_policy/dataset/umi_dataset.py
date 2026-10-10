@@ -82,6 +82,9 @@ class UmiDataset(BaseDataset):
         seed: int=42,
         val_ratio: float=0.0,
         max_duration: Optional[float]=None,
+        # Separate .zarr.zip used as the whole validation set. When set,
+        # val_ratio is ignored and every episode of dataset_path trains.
+        val_dataset_path: Optional[str]=None,
         # PA-RL: optional per-frame cache of "optimized" action chunks
         # produced by a relabel pass (see
         # diffusion_policy.policy.parl_action_optimizer.optimize_actions
@@ -186,11 +189,21 @@ class UmiDataset(BaseDataset):
         key_latency_steps['action'] = shape_meta['action']['latency_steps']
         key_down_sample_steps['action'] = shape_meta['action']['down_sample_steps']
 
-        val_mask = get_val_mask(
-            n_episodes=replay_buffer.n_episodes, 
-            val_ratio=val_ratio,
-            seed=seed
-        )
+        if val_dataset_path is not None:
+            with zarr.ZipStore(val_dataset_path, mode='r') as zip_store:
+                self.val_replay_buffer = ReplayBuffer.copy_from_store(
+                    src_store=zip_store,
+                    store=zarr.MemoryStore()
+                )
+            val_mask = np.zeros(replay_buffer.n_episodes, dtype=bool)
+        else:
+            self.val_replay_buffer = None
+            val_mask = get_val_mask(
+                n_episodes=replay_buffer.n_episodes, 
+                val_ratio=val_ratio,
+                seed=seed
+            )
+        self.val_dataset_path = val_dataset_path
         train_mask = ~val_mask
 
         self.sampler_lowdim_keys = list()
@@ -350,6 +363,10 @@ class UmiDataset(BaseDataset):
         / AWR behavior). When ``valid is None`` we assume every row is
         valid (only safe if you wrote a value at every anchor index).
         """
+        if self.replay_buffer is self.val_replay_buffer:
+            # A separate validation zarr has its own frame indices, so the
+            # training-frame cache does not apply; it keeps dataset actions.
+            return
         if actions is None:
             self.action_optimized = None
             self.action_optimized_valid = None
@@ -378,20 +395,33 @@ class UmiDataset(BaseDataset):
 
     def get_validation_dataset(self):
         val_set = copy.copy(self)
+        if self.val_replay_buffer is not None:
+            replay_buffer = self.val_replay_buffer
+            episode_mask = np.ones(replay_buffer.n_episodes, dtype=bool)
+            # Frame-indexed side data (Q/V, PA-RL cache) must match this zarr.
+            val_set.replay_buffer = replay_buffer
+            val_set.n_frames_total = int(replay_buffer.n_steps)
+            val_set.rl_q, val_set.rl_v = _try_load_rl_q_v(self.val_dataset_path)
+            val_set.has_rl_qv = val_set.rl_q is not None and val_set.rl_v is not None
+            val_set.action_optimized = None
+            val_set.action_optimized_valid = None
+        else:
+            replay_buffer = self.replay_buffer
+            episode_mask = self.val_mask
         val_set.sampler = SequenceSampler(
             shape_meta=self.shape_meta,
-            replay_buffer=self.replay_buffer,
+            replay_buffer=replay_buffer,
             rgb_keys=self.rgb_keys,
             lowdim_keys=self.sampler_lowdim_keys,
             key_horizon=self.key_horizon,
             key_latency_steps=self.key_latency_steps,
             key_down_sample_steps=self.key_down_sample_steps,
-            episode_mask=self.val_mask,
+            episode_mask=episode_mask,
             action_padding=self.action_padding,
             repeat_frame_prob=self.repeat_frame_prob,
             max_duration=self.max_duration
         )
-        val_set.val_mask = ~self.val_mask
+        val_set.val_mask = ~episode_mask
         return val_set
     
     def get_normalizer(self, **kwargs) -> LinearNormalizer:
