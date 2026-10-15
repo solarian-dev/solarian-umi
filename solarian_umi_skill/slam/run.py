@@ -1,4 +1,4 @@
-"""Run the copied SLAM pipeline, then write the training zarr."""
+"""Run the copied SLAM pipeline, then write the training dataset."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import sys
 from pathlib import Path
 
 from solarian_umi_skill.slam.docker import (
+    LUMI_ORB_SLAM3_IMAGE,
     OPENICC_IMAGE,
     ORB_SLAM3_IMAGE,
     ensure_image,
-    ensure_lumi_slam_image,
 )
 
 PACKAGE = Path(__file__).resolve().parent
@@ -20,14 +20,23 @@ def calibration_dir() -> Path:
     return PACKAGE / "calibration"
 
 
+#: The last step's script per output format.
+DATASET_SCRIPTS = {
+    "solarian": "07_generate_session.py",
+    "zarr": "07_generate_replay_buffer.py",
+}
+
+
 def pipeline_argv(
     session: Path,
     output: Path,
     calibration: Path,
     camera: str = "gopro",
     slam_settings: Path | None = None,
+    dataset_format: str = "solarian",
+    gripper_tag_threshold: float | None = None,
 ) -> tuple[list[str], list[str]]:
-    """The two commands: steps 00–06, then the replay-buffer zarr."""
+    """The two commands: steps 00–06, then the dataset in ``dataset_format``."""
     slam = [
         sys.executable,
         str(PACKAGE / "run_pipeline.py"),
@@ -39,11 +48,13 @@ def pipeline_argv(
         slam.extend(["--camera", camera])
     if slam_settings is not None:
         slam.extend(["--slam-settings", str(slam_settings)])
+    if gripper_tag_threshold is not None:
+        slam.extend(["--gripper-tag-threshold", str(gripper_tag_threshold)])
     return (
         slam,
         [
             sys.executable,
-            str(PACKAGE / "scripts" / "07_generate_replay_buffer.py"),
+            str(PACKAGE / "scripts" / DATASET_SCRIPTS[dataset_format]),
             "-o",
             str(output),
             str(session),
@@ -57,6 +68,8 @@ def run_session(
     calibration: Path | None = None,
     camera: str = "gopro",
     slam_settings: Path | None = None,
+    dataset_format: str = "solarian",
+    gripper_tag_threshold: float | None = None,
 ) -> None:
     if not session.is_dir():
         raise FileNotFoundError(
@@ -70,13 +83,14 @@ def run_session(
     # Lumi IMU data comes from the collector's sidecars instead.
     if camera == "gopro":
         ensure_image(OPENICC_IMAGE)
-    ensure_image(ORB_SLAM3_IMAGE)
-    if camera == "lumi":
-        ensure_lumi_slam_image()
-    slam_cmd, zarr_cmd = pipeline_argv(
-        session, output, calibration, camera=camera, slam_settings=slam_settings
+        ensure_image(ORB_SLAM3_IMAGE)
+    else:
+        ensure_image(LUMI_ORB_SLAM3_IMAGE)
+    slam_cmd, dataset_cmd = pipeline_argv(
+        session, output, calibration, camera=camera, slam_settings=slam_settings,
+        dataset_format=dataset_format, gripper_tag_threshold=gripper_tag_threshold,
     )
     slam = subprocess.run(slam_cmd)
     if slam.returncode != 0:
         raise SystemExit(slam.returncode)
-    subprocess.run(zarr_cmd, check=True)
+    subprocess.run(dataset_cmd, check=True)

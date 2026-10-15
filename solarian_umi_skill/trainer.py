@@ -40,13 +40,17 @@ class UmiTrainConfig(BaseModel):
     job_name: str
     output_dir: str | None = None
     config_name: str = "train_diffusion_unet_timm_umi_cup_wild"
+    # A .zarr.zip, or a .solarian.zip session (`solarian umi-slam`'s default
+    # output; an unzipped session directory also works), whose videos are
+    # decoded to the policy resolution when training starts. Every dataset
+    # path below takes either.
     dataset_path: str | None = None
-    # Instead of dataset_path: train on several .zarr.zip files, each sample
+    # Instead of dataset_path: train on several datasets, each sample
     # drawn from entry i with probability weight_i / sum(weights) whatever
     # its size. Frames are sampled, not copied. Validation comes from the
     # first entry; the normalizer is fit on all of them.
     datasets: list[UmiDatasetEntry] | None = None
-    # Validate on this .zarr.zip and train on all of dataset_path. Unset: a
+    # Validate on this dataset and train on all of dataset_path. Unset: a
     # random task.dataset.val_ratio share of dataset_path's episodes.
     val_dataset_path: str | None = None
     batch_size: int = 64
@@ -68,10 +72,19 @@ class UmiTrainConfig(BaseModel):
     # init_from_ckpt.
     resume: bool = False
     # How the image features condition the policy. Only for configs with a
-    # mask_channel bbox. cls: the ViT summary token. box_pool: adds the patch
-    # tokens under the box and its corners. A cls init_from_ckpt is widened
-    # with zero weights for those inputs. null keeps the config's choice.
+    # target (see `target`). cls: the ViT summary token. box_pool: adds the
+    # patch tokens under the target and its bounding corners. A cls
+    # init_from_ckpt is widened with zero weights for those inputs. null keeps
+    # the config's choice.
     bbox_conditioning: Literal["cls", "box_pool"] | None = None
+    # What marks the object to pick, in the point-and-pick config
+    # (train_diffusion_unet_timm_umi_pick_bbox). bbox: the zarr's `bbox`
+    # array, drawn as a filled rectangle. mask: its `mask` array, the
+    # object's segmentation (primarykey scripts/zarr_add_masks.py adds it).
+    # A session carries both in episodes/*/targets/camera0.rgb.npz.
+    # Both reach the ViT as the same 4th channel, so either can start from
+    # the other's checkpoint.
+    target: Literal["bbox", "mask"] = "bbox"
     logging: UmiLoggingConfig = Field(default_factory=UmiLoggingConfig)
     overrides: list[str] = Field(default_factory=list)
 
@@ -155,7 +168,29 @@ def train_overrides(cfg: UmiTrainConfig, output_dir: str) -> list[str]:
         overrides.append("policy.obs_encoder.feature_aggregation=null")
     elif cfg.bbox_conditioning == "box_pool":
         overrides.append("policy.obs_encoder.feature_aggregation=box_pool")
+    if cfg.target == "mask":
+        overrides += ["task=umi_pick_mask", "bbox_mode=mask"]
     return overrides + cfg.overrides
+
+
+def is_dataset(dataset_path: str) -> bool:
+    """A ``.zarr.zip``, a ``.solarian.zip`` or a session directory exists here."""
+    from solarian_umi_skill.diffusion_policy.dataset.solarian_session import is_session
+
+    return os.path.isfile(os.path.expanduser(dataset_path)) or is_session(dataset_path)
+
+
+def has_mask(dataset_path: str) -> bool:
+    """Whether a dataset has a target mask for every frame, without loading it."""
+    from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
+        has_target, is_session)
+
+    if is_session(dataset_path):
+        return has_target(dataset_path, "mask")
+    import zipfile
+
+    with zipfile.ZipFile(os.path.expanduser(dataset_path)) as zf:
+        return "data/mask/.zarray" in zf.namelist()
 
 
 class UmiTrainer(PolicyTrainer):
@@ -200,8 +235,8 @@ class UmiTrainer(PolicyTrainer):
         cfg: UmiTrainConfig = self.cfg
         if not cfg.dataset_paths:
             raise ValueError(
-                "Training config must set dataset_path to a .zarr.zip dataset, "
-                "or datasets to several."
+                "Training config must set dataset_path to a .zarr.zip or a "
+                ".solarian.zip, or datasets to several."
             )
         output_dir = self.output_dir or cfg.output_dir
         if not output_dir:
@@ -210,13 +245,28 @@ class UmiTrainer(PolicyTrainer):
             )
         # Checked before the training set loads. The workspace only warns on a
         # missing init checkpoint and then trains from the pretrained backbone.
-        for field in ("init_from_ckpt", "val_dataset_path"):
-            path = getattr(cfg, field)
-            if path and not os.path.isfile(os.path.expanduser(path)):
-                raise FileNotFoundError(f"{field} not found: {path}")
+        if cfg.init_from_ckpt and not os.path.isfile(os.path.expanduser(cfg.init_from_ckpt)):
+            raise FileNotFoundError(f"init_from_ckpt not found: {cfg.init_from_ckpt}")
+        if cfg.val_dataset_path and not is_dataset(cfg.val_dataset_path):
+            raise FileNotFoundError(f"val_dataset_path not found: {cfg.val_dataset_path}")
         for path in cfg.dataset_paths:
-            if not os.path.isfile(os.path.expanduser(path)):
+            if not is_dataset(path):
                 raise FileNotFoundError(f"dataset not found: {path}")
+        if cfg.target == "mask":
+            from solarian_umi_skill.diffusion_policy.dataset.solarian_session import is_session
+
+            for path in cfg.dataset_paths + [p for p in [cfg.val_dataset_path] if p]:
+                if not has_mask(path):
+                    if is_session(path):
+                        raise ValueError(
+                            f"target: mask needs a mask in every episode's "
+                            f"targets/camera0.rgb.npz in {path}; write them with "
+                            "solarian_session.write_targets"
+                        )
+                    raise ValueError(
+                        f"target: mask needs a data/mask array in {path}; "
+                        "add it with primarykey scripts/zarr_add_masks.py"
+                    )
         # Without latest.ckpt the workspace would neither resume nor apply
         # init_from_ckpt, and silently start from the pretrained backbone.
         latest = os.path.join(output_dir, "checkpoints", "latest.ckpt")

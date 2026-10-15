@@ -17,6 +17,7 @@ from solarian_umi_skill.slam.lumi_camera import (
     slam_mask,
     slam_yaml_text,
 )
+from solarian_umi_skill.slam.lumi_imu import demo_sidecars
 from solarian_umi_skill.slam.run import calibration_dir
 
 
@@ -94,3 +95,44 @@ def test_slam_setting_mount(tmp_path: Path):
 
     with pytest.raises(FileNotFoundError):
         slam_setting_mount(tmp_path / "missing.yaml")
+
+
+def test_an_excluded_demo_is_not_paired_with_its_sidecar(tmp_path):
+    raw = tmp_path / "raw_videos"
+    raw.mkdir()
+    kept = tmp_path / "demos" / "demo_a"
+    kept.mkdir(parents=True)
+    (kept / "raw_video.mp4").touch()
+    for stem, demo in (("GX01", "demo_a"), ("GX02", "demo_b")):
+        (tmp_path / f"{stem}.imu.json").touch()
+        (raw / f"{stem}.MP4").symlink_to(f"../demos/{demo}/raw_video.mp4")
+
+    assert demo_sidecars(tmp_path) == {kept.resolve(): tmp_path / "GX01.imu.json"}
+
+
+def test_renamed_clips_get_the_spare_sidecar_of_their_length(tmp_path, monkeypatch):
+    raw = tmp_path / "raw_videos"
+    (raw / "gripper_calibration").mkdir(parents=True)
+    durations = {}
+    for stem, link, demo, seconds in (
+        ("GX01", "mapping.mp4", "mapping", 60.0),
+        ("GX02", "gripper_calibration/gripper_calibration.mp4", "gripper_calibration_LUMI0001_x", 7.0),
+        ("GX03", "GX03.MP4", "demo_LUMI0001_y", 9.0),
+    ):
+        (tmp_path / "demos" / demo).mkdir(parents=True)
+        (tmp_path / "demos" / demo / "raw_video.mp4").touch()
+        (raw / link).symlink_to(Path("..", *[".."] * link.count("/"), "demos", demo, "raw_video.mp4"))
+        samples = [{"cts": 0}, {"cts": seconds * 1000}]
+        (tmp_path / f"{stem}.imu.json").write_text(json.dumps({"1": {"streams": {"GYRO": {"samples": samples}}}}))
+        durations[(tmp_path / "demos" / demo).resolve()] = seconds
+    monkeypatch.setattr(
+        "solarian_umi_skill.slam.lumi_imu.video_frame_count",
+        lambda video: (int(durations[video.parent.resolve()] * 30), 30.0),
+    )
+
+    pairs = {demo.name: sidecar.name for demo, sidecar in demo_sidecars(tmp_path).items()}
+    assert pairs == {
+        "mapping": "GX01.imu.json",
+        "gripper_calibration_LUMI0001_x": "GX02.imu.json",
+        "demo_LUMI0001_y": "GX03.imu.json",
+    }

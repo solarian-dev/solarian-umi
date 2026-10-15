@@ -54,7 +54,7 @@ def get_real_obs_dict(
                     out_imgs = out_imgs.astype(np.float32) / 255
             # THWC to TCHW
             obs_dict_np[key] = np.moveaxis(out_imgs,-1,1)
-        elif type == 'low_dim':
+        elif type in ('low_dim', 'mask'):
             this_data_in = env_obs[key]
             obs_dict_np[key] = this_data_in
     return obs_dict_np
@@ -90,6 +90,9 @@ def get_real_umi_obs_dict(
                     out_imgs = out_imgs.astype(np.float32) / 255
             # THWC to TCHW
             obs_dict_np[key] = np.moveaxis(out_imgs,-1,1)
+        elif type == 'mask':
+            # Already (T, 1, H, W) 0/1 in the policy frame.
+            obs_dict_np[key] = env_obs[key]
         elif type == 'low_dim' and ('eef' not in key):
             this_data_in = env_obs[key]
             obs_dict_np[key] = this_data_in

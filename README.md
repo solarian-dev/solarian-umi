@@ -42,10 +42,10 @@ With no `--config`, `run-policy` reads `conf/umi.yaml`.
 
 ## Point and pick
 
-`UMIPnPSkill` runs a UMI checkpoint trained with a target box (`obs.bbox` with `bbox_mode: mask_channel`): the box is drawn as a fourth mask channel over `camera0_rgb`. Its config is `conf/umi_pnp.yaml`, the same keys as `conf/umi.yaml` plus:
+`UMIPnPSkill` runs a UMI checkpoint trained with a target, a fourth input channel over `camera0_rgb`: a box drawn as a filled rectangle (`obs.bbox` with `bbox_mode: mask_channel`) or the object's mask (`obs.mask`, trained with `target: mask`). Its config is `conf/umi_pnp.yaml`, the same keys as `conf/umi.yaml` plus:
 
 - `execution_place`: `server` or `robot`, from a required deployment key (`pnp_execution_place` in the template).
-- `bbox_field`: the camera's calculated field holding the box in capture pixels, default `bbox`.
+- `target_field`: the camera's calculated field holding the target in capture pixels, default `bbox`. A `BoundingBoxData` for a box checkpoint, a `MaskData` (from `Sam2MaskProcessor`) for a mask checkpoint; `setup` refuses a mismatch.
 
 ```python
 from solarian_umi_skill import UMIPnPSkill
@@ -53,7 +53,7 @@ from solarian_umi_skill import UMIPnPSkill
 self.start_skill(UMIPnPSkill(params={"config": "umi_pnp.yaml"}))
 ```
 
-The box usually comes from a tracker service such as `solarian-sam2-tracker`, seeded when the operator clicks the object (`self.start_service(camera, "bbox", point=...)`). Before a target is set the field is all zeros and the policy gets the whole frame as its box, the placeholder it was trained with. The skill maps the box through the same remap, resize and crop as the frame.
+The box usually comes from a tracker service such as `solarian-sam2-tracker`, seeded when the operator clicks the object (`self.start_service(camera, "bbox", point=...)`). Before a target is set the field is all zeros and the policy gets the whole frame as its box, the placeholder it was trained with; a mask field is None and the policy gets an empty mask. The skill maps the box or mask through the same remap, resize and crop as the frame, and clears a mask where the gripper and mirrors are painted black.
 
 On the server, the skill sits beside the tracker and the robot only captures and executes. On the robot, the bbox field must also be computed on the robot (`execution_place: robot` in its conf); `setup` refuses a robot-hosted skill reading a server-computed box, because that field never reaches the robot. Point both confs at one deployment key so they cannot disagree.
 
@@ -89,8 +89,9 @@ self.start_skill(UMISkill(params={"config": "cup_arrange.yaml"}))
 - `datasets`: instead of `dataset_path`, a list of `{path, weight}`. Each sample comes from entry `i` with probability `weight_i / sum(weights)`, whatever the entry's size, so a small set can be emphasized without copying it. Validation comes from the first entry (or `val_dataset_path`); the normalizer is fit on all of them.
 - `num_train_steps` and `steps_per_epoch`: instead of `num_epochs`, a budget in optimizer steps. Each epoch draws `steps_per_epoch` random batches, so it only sets how often validation, sampling and checkpoints run.
 - `resume`: continue an interrupted run from `models/<job_name>/checkpoints/latest.ckpt` at its next epoch. `num_epochs` stays the run's total.
-- `val_dataset_path`: a separate `.zarr.zip` used as the whole validation set; every episode of `dataset_path` trains. Unset, a random `val_ratio` (5%) of `dataset_path`'s episodes validates.
+- `val_dataset_path`: a separate dataset (`.zarr.zip` or `.solarian.zip`) used as the whole validation set; every episode of `dataset_path` trains. Unset, a random `val_ratio` (5%) of `dataset_path`'s episodes validates.
 - `bbox_conditioning`: `cls` conditions on the ViT summary token. `box_pool` also adds the mean of the patch tokens under the box and the box corners. `box_pool` widens the conditioning. A `cls` checkpoint in `init_from_ckpt` still initializes it: its conditioning weights move to the CLS and low-dim positions and the new columns start at zero, so the widened network computes the same function as the checkpoint until training moves those weights.
+- `target`: `bbox` (default) conditions on the zarr's `bbox` array, drawn as a filled rectangle. `mask` conditions on its `mask` array, the object's segmentation, which marks a thin or diagonal object such as a cable where a box covers mostly background. Add the array with primarykey `scripts/zarr_add_masks.py`. Both enter the ViT as the same 4th channel, so a bbox checkpoint can start a mask run. `UMIPnPSkill` reads the camera's `target_mask` field for a mask checkpoint.
 
 Command-line values that contain `=` need inner quotes:
 
@@ -102,17 +103,38 @@ solarian train --conf conf/train-umi-pick dataset_path=datasets/pick.zarr.zip \
 
 ## SLAM
 
-`solarian umi-slam` reads a directory of GoPro or Lumi collector MP4s and writes `dataset.zarr.zip`. That file is `dataset_path` in the training yaml. It does not read a `solarian record` session.
+`solarian umi-slam` reads a directory of GoPro or Lumi collector MP4s and writes a training dataset. That dataset is `dataset_path` in the training yaml. The input is not a `solarian record` session.
 
 ```bash
 pip install "solarian-umi-skill[slam]"
 solarian umi-slam datasets/cup_session
+# writes datasets/cup_session/dataset.solarian.zip
+solarian umi-slam datasets/cup_session --format zarr
 # writes datasets/cup_session/dataset.zarr.zip
 
 # Lumi: once per camera and lens, with the collector on its Stream video screen.
 solarian umi-calibrate-lumi --serial LUMI07FC9785   # writes conf/cameras/LUMI07FC9785.json
 solarian umi-slam datasets/lumi_session --camera lumi
 ```
+
+`--format solarian` (the default) writes a solarian session, the layout `solarian record` uses, packed into one `.solarian.zip` with its entries at the archive root, as in a `.zarr.zip`. PrimaryKey accepts it as an upload, and unzipped it is a session directory `export-dataset` reads. Training reads the zip directly; the mp4s are stored without zip compression, so they decode straight out of the archive:
+
+```
+dataset.solarian.zip
+  session.json, manifest.jsonl
+  episodes/000000/
+    episode.json             + "umi": demo start and end pose per gripper
+    episode.parquet          obs.robot0.{x,y,z,rx,ry,rz,gripper_width}, one row per frame
+    video/camera0.rgb.mp4    the remapped 1440x1080 video, not inpainted, masked or resized
+    tags/camera0.rgb.json    ArUco corners per frame
+    targets/camera0.rgb.npz  optional: bbox and/or mask per frame, in video pixels
+```
+
+The video keeps the full resolution, so tracking and segmentation (SAM 2) can run on it, and it is far smaller than 224x224 JPEG-XL frames. Training decodes each episode once when it starts: tags are inpainted, the gripper is masked and the frame is cropped to the policy resolution, the same steps `--format zarr` bakes into `dataset.zarr.zip`. Set the Hydra override `task.dataset.cache_dir=<dir>` to keep the decoded buffer between runs (needs `pip install lmdb`). Add `targets/` with `solarian_umi_skill.diffusion_policy.dataset.solarian_session.write_targets(path, episode, bbox=..., mask=...)`, which appends to the zip; a `bbox` or `mask` present in every episode becomes the `bbox` or `mask` array a pick config trains on.
+
+`--format zarr` writes the 224x224 `dataset.zarr.zip` instead.
+
+A clip named `mapping.mp4` in the session directory is the mapping video, and one named `gripper_calibration.mp4` is the gripper calibration video (either case). Without them, the largest clip is the mapping video and the earliest remaining clip of each camera is its gripper calibration. A Lumi clip renamed this way gets the leftover `.imu.json` sidecar whose length best matches it.
 
 `--camera gopro` (the default) uses the GoPro Max Lens yaml shipped in the ORB-SLAM3 image.
 
@@ -129,7 +151,7 @@ solarian umi-slam datasets/lumi_session --camera lumi
 
 `--slam-settings PATH` mounts another ORB-SLAM3 yaml instead.
 
-ORB-SLAM3 runs in Docker image `chicheng/orb_slam3:latest`. GoPro IMU extraction runs in `chicheng/openicc:latest`. The Lumi remap needs `ffmpeg` on the path. If the image is already on this machine, it is used. If it is missing, the command asks before downloading it and running it here.
+ORB-SLAM3 runs in Docker image `chicheng/orb_slam3:latest`. GoPro IMU extraction runs in `chicheng/openicc:latest`. With `--camera lumi`, ORB-SLAM3 runs in `solariandev/orb_slam3:lumi-inliers15` instead: the same image with the inlier floor for the first second after relocalization lowered from 30 to 15, built from `solarian_umi_skill/slam/Dockerfile.lumi`. The Lumi remap needs `ffmpeg` on the path. If the image is already on this machine, it is used. If it is missing, the command asks before downloading it and running it here.
 
 The camera serial is read from the GPMF track in the MP4, which both GoPro and Lumi write. A GoPro file's start time comes from `creation_time` plus the timecode. A Lumi file muxed without `creation_time` uses the timecode plus the file's modification time.
 

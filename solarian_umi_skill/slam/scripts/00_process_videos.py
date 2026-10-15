@@ -37,21 +37,37 @@ def main(session_dir):
                 out_path = input_dir.joinpath(mp4_path.name)
                 shutil.move(mp4_path, out_path)
         
+        # mapping.MP4 and gripper_calibration.MP4 count as the named videos too
+        for name in ('mapping.mp4', 'gripper_calibration.mp4'):
+            for mp4_path in input_dir.iterdir():
+                if mp4_path.name.lower() == name and mp4_path.name != name:
+                    mp4_path.rename(input_dir.joinpath(name))
+
+        # create gripper calibration video if don't exist
+        gripper_cal_dir = input_dir.joinpath('gripper_calibration')
+        named_cal_path = input_dir.joinpath('gripper_calibration.mp4')
+        if not gripper_cal_dir.is_dir() and named_cal_path.is_file() and not named_cal_path.is_symlink():
+            gripper_cal_dir.mkdir()
+            shutil.move(named_cal_path, gripper_cal_dir.joinpath(named_cal_path.name))
+            print("Using raw_videos/gripper_calibration.mp4 as the gripper calibration video.")
+
         # create mapping video if don't exist
         mapping_vid_path = input_dir.joinpath('mapping.mp4')
         if (not mapping_vid_path.exists()) and not(mapping_vid_path.is_symlink()):
             max_size = -1
             max_path = None
             for mp4_path in list(input_dir.glob('**/*.MP4')) + list(input_dir.glob('**/*.mp4')):
+                if mp4_path.parent == gripper_cal_dir:
+                    continue
                 size = mp4_path.stat().st_size
                 if size > max_size:
                     max_size = size
                     max_path = mp4_path
             shutil.move(max_path, mapping_vid_path)
             print(f"raw_videos/mapping.mp4 don't exist! Renaming largest file {max_path.name}.")
-        
-        # create gripper calibration video if don't exist
-        gripper_cal_dir = input_dir.joinpath('gripper_calibration')
+        elif not mapping_vid_path.is_symlink():
+            print("Using raw_videos/mapping.mp4 as the mapping video.")
+
         if not gripper_cal_dir.is_dir():
             gripper_cal_dir.mkdir()
             print("raw_videos/gripper_calibration don't exist! Creating one with the first video of each camera serial.")

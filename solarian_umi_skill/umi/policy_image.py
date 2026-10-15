@@ -119,6 +119,34 @@ class PolicyImagePipeline:
             return full
         return np.array([x, y, x + bw, y + bh], dtype=np.float32)
 
+    def target_mask(self, mask, frame_hw: tuple[int, int], warp=None) -> np.ndarray:
+        """A capture-pixel target mask as the policy sees it: ``(oh, ow)`` float32 0/1.
+
+        Sent through the same ``warp`` and :meth:`resize` as the frame, then
+        cleared where :meth:`mask` paints the gripper and mirrors black: the
+        training masks were segmented on frames already painted. None or an
+        empty mask stays all zeros, the "no target" the dataset stores for a
+        frame without a box.
+        """
+        ow, oh = self.output_res
+        empty = np.zeros((oh, ow), dtype=np.float32)
+        if mask is None:
+            return empty
+        mask = np.asarray(mask)
+        if mask.shape != tuple(frame_hw):
+            raise ValueError(
+                f"target mask is {mask.shape} but the frame is {tuple(frame_hw)}; "
+                "the mask must come from the camera field the policy sees"
+            )
+        if not mask.any():
+            return empty
+        img = np.repeat((mask > 0).astype(np.uint8)[..., None] * 255, 3, axis=-1)
+        if warp is not None:
+            img = warp(img)
+        img = self.resize(img[None])
+        visible = self.mask(np.full_like(img, 255))
+        return ((img[0, ..., 0] > 127) & (visible[0, ..., 0] > 127)).astype(np.float32)
+
     def __call__(self, images: np.ndarray) -> np.ndarray:
         return self.mask(self.resize(images))
 

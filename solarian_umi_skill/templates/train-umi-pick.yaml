@@ -4,8 +4,9 @@
 #
 #   solarian train --conf conf/train-umi-pick
 #
-# dataset_path needs a `bbox` array per frame: run primarykey
-# scripts/track_zarr.py --backwards --save on the SLAM dataset first.
+# dataset_path needs a `bbox` per frame. In a .zarr.zip: run primarykey
+# scripts/track_zarr.py --backwards --save on the SLAM dataset first. In a
+# .solarian.zip: episodes/*/targets/camera0.rgb.npz, in video pixels.
 # Checkpoints land in models/<job_name>/checkpoints/; point umi_pnp.yaml's
 # policy_server.checkpoint (deployment.pnp_policy_checkpoint) at one.
 
@@ -20,7 +21,7 @@ config_name: train_diffusion_unet_timm_umi_pick_bbox
 
 dataset_path: null
 
-# Episodes kept out of dataset_path, as their own .zarr.zip (bbox tracked,
+# Episodes kept out of dataset_path, as their own dataset (bbox tracked,
 # mirrored like the training set). val_loss is computed on them and every
 # episode of dataset_path trains. null: a random 5% of dataset_path's
 # episodes, which splits mirror twins and duplicated episodes across both.
@@ -53,6 +54,11 @@ resume: false
 # init_from_ckpt is widened with zeros for the new inputs, so the network
 # starts as the checkpoint's function.
 bbox_conditioning: cls
+
+# bbox: the zarr's `bbox` array, drawn as a filled rectangle.
+# mask: its `mask` array, the object's segmentation (primarykey
+# scripts/zarr_add_masks.py adds it); better for thin or diagonal objects.
+target: bbox
 
 logging:
   mode: online

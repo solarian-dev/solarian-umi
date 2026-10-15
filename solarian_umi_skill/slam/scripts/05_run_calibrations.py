@@ -21,7 +21,8 @@ import subprocess
 @click.command()
 @click.argument('session_dir', nargs=-1)
 @click.option('-nz', '--nominal_z', type=float, default=0.072, help="nominal Z value for gripper finger tag")
-def main(session_dir, nominal_z):
+@click.option('-t', '--tag_det_threshold', type=float, default=0.8, help="fraction of gripper calibration frames in which each finger tag must be detected")
+def main(session_dir, nominal_z, tag_det_threshold):
     script_dir = pathlib.Path(__file__).parent
     
     for session in session_dir:
@@ -65,6 +66,7 @@ def main(session_dir, nominal_z):
                 '--input', str(tag_path),
                 '--output', str(gripper_range_path),
                 '--nominal_z', str(nominal_z),
+                '--tag_det_threshold', str(tag_det_threshold),
             ]
             result = subprocess.run(cmd)
             if result.returncode != 0:

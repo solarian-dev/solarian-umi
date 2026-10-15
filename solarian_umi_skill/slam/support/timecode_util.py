@@ -41,7 +41,10 @@ def stream_get_start_datetime(
     time for the first frame of a video.
     """
     # read metadata
-    frame_rate = stream.average_rate
+    # The timecode counts frames at the nominal rate. average_rate falls below
+    # it when a Lumi take drops frames, which stretches the time of day by
+    # minutes and can push the start past the seal time into the previous day.
+    frame_rate = stream.base_rate
     tc = stream.metadata['timecode']
     creation_time = stream.metadata.get('creation_time')
     

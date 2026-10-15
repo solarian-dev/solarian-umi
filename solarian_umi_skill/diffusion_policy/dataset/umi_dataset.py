@@ -27,6 +27,8 @@ from solarian_umi_skill.diffusion_policy.common.pytorch_util import dict_apply
 from solarian_umi_skill.diffusion_policy.common.replay_buffer import ReplayBuffer
 from solarian_umi_skill.diffusion_policy.common.sampler import SequenceSampler, get_val_mask
 from solarian_umi_skill.diffusion_policy.dataset.base_dataset import BaseDataset
+from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
+    is_session, load_session_replay_buffer, session_stamp)
 from solarian_umi_skill.diffusion_policy.model.common.normalizer import LinearNormalizer
 from solarian_umi_skill.umi.common.pose_util import pose_to_mat, mat_to_pose10d
 
@@ -45,8 +47,10 @@ def _try_load_rl_q_v(dataset_path: str):
     ``__getitem__`` can hand back per-sample advantages without touching
     the zarr again. Returns ``(None, None)`` if the source zarr has no
     ``rl/q`` / ``rl/v`` -- callers treat this as "no advantage info"
-    and fall back to plain BC behavior.
+        and fall back to plain BC behavior.
     """
+    if is_session(dataset_path):
+        return None, None
     try:
         with zarr.ZipStore(dataset_path, mode='r') as zip_store:
             root = zarr.open(zip_store, mode='r')
@@ -68,6 +72,29 @@ def _try_load_rl_q_v(dataset_path: str):
         # Any I/O hiccup -> treat as "no advantage info". The caller
         # will silently skip the AWR weighting path.
         return None, None
+
+
+def _policy_res(shape_meta: dict) -> tuple:
+    """``(width, height)`` of the rgb observations, which must all agree."""
+    sizes = {
+        (attr['shape'][2], attr['shape'][1])
+        for attr in shape_meta['obs'].values()
+        if attr.get('type', 'low_dim') == 'rgb'
+    }
+    assert len(sizes) == 1, f"rgb observations disagree on resolution: {sizes}"
+    return sizes.pop()
+
+
+def open_replay_buffer(dataset_path: str, store, out_res: tuple) -> ReplayBuffer:
+    """A ``.zarr.zip`` or a solarian session, copied into ``store``.
+
+    A session is decoded to ``out_res`` ``(width, height)``; a zarr is
+    already at its stored resolution.
+    """
+    if is_session(dataset_path):
+        return load_session_replay_buffer(dataset_path, out_res, store=store)
+    with zarr.ZipStore(dataset_path, mode='r') as zip_store:
+        return ReplayBuffer.copy_from_store(src_store=zip_store, store=store)
 
 
 def mix_sampler(lengths, weights, num_samples: Optional[int]) -> torch.utils.data.Sampler:
@@ -102,7 +129,7 @@ class UmiDataset(BaseDataset):
         seed: int=42,
         val_ratio: float=0.0,
         max_duration: Optional[float]=None,
-        # Separate .zarr.zip used as the whole validation set. When set,
+        # Separate .zarr.zip or solarian session used as the whole validation set. When set,
         # val_ratio is ignored and every episode of dataset_path trains.
         val_dataset_path: Optional[str]=None,
         # PA-RL: optional per-frame cache of "optimized" action chunks
@@ -129,20 +156,21 @@ class UmiDataset(BaseDataset):
         self.obs_pose_repr = self.pose_repr.get('obs_pose_repr', 'rel')
         self.action_pose_repr = self.pose_repr.get('action_pose_repr', 'rel')
         
+        out_res = _policy_res(shape_meta)
         if cache_dir is None:
-            # load into memory store
-            with zarr.ZipStore(dataset_path, mode='r') as zip_store:
-                replay_buffer = ReplayBuffer.copy_from_store(
-                    src_store=zip_store, 
-                    store=zarr.MemoryStore()
-                )
+            replay_buffer = open_replay_buffer(dataset_path, zarr.MemoryStore(), out_res)
         else:
-            # TODO: refactor into a stand alone function?
             # determine path name
-            mod_time = os.path.getmtime(dataset_path)
+            if is_session(dataset_path):
+                mod_time = session_stamp(dataset_path)
+            else:
+                mod_time = os.path.getmtime(dataset_path)
             stamp = datetime.fromtimestamp(mod_time).isoformat()
-            stem_name = os.path.basename(dataset_path).split('.')[0]
+            stem_name = os.path.basename(os.path.normpath(dataset_path)).split('.')[0]
             cache_name = '_'.join([stem_name, stamp])
+            if is_session(dataset_path):
+                # A session is decoded to the policy resolution, so that keys the cache too.
+                cache_name += f'_{out_res[0]}x{out_res[1]}'
             cache_dir = pathlib.Path(os.path.expanduser(cache_dir))
             cache_dir.mkdir(parents=True, exist_ok=True)
             cache_path = cache_dir.joinpath(cache_name + '.zarr.mdb')
@@ -157,12 +185,8 @@ class UmiDataset(BaseDataset):
                         with zarr.LMDBStore(str(cache_path),     
                             writemap=True, metasync=False, sync=False, map_async=True, lock=False
                             ) as lmdb_store:
-                            with zarr.ZipStore(dataset_path, mode='r') as zip_store:
-                                print(f"Copying data to {str(cache_path)}")
-                                ReplayBuffer.copy_from_store(
-                                    src_store=zip_store,
-                                    store=lmdb_store
-                                )
+                            print(f"Copying data to {str(cache_path)}")
+                            open_replay_buffer(dataset_path, lmdb_store, out_res)
                         print("Cache written to disk!")
                     except Exception as e:
                         shutil.rmtree(cache_path)
@@ -176,6 +200,7 @@ class UmiDataset(BaseDataset):
         
         self.num_robot = 0
         rgb_keys = list()
+        mask_keys = list()
         lowdim_keys = list()
         key_horizon = dict()
         key_down_sample_steps = dict()
@@ -186,6 +211,8 @@ class UmiDataset(BaseDataset):
             type = attr.get('type', 'low_dim')
             if type == 'rgb':
                 rgb_keys.append(key)
+            elif type == 'mask':
+                mask_keys.append(key)
             elif type == 'low_dim':
                 lowdim_keys.append(key)
 
@@ -210,11 +237,8 @@ class UmiDataset(BaseDataset):
         key_down_sample_steps['action'] = shape_meta['action']['down_sample_steps']
 
         if val_dataset_path is not None:
-            with zarr.ZipStore(val_dataset_path, mode='r') as zip_store:
-                self.val_replay_buffer = ReplayBuffer.copy_from_store(
-                    src_store=zip_store,
-                    store=zarr.MemoryStore()
-                )
+            self.val_replay_buffer = open_replay_buffer(
+                val_dataset_path, zarr.MemoryStore(), out_res)
             val_mask = np.zeros(replay_buffer.n_episodes, dtype=bool)
         else:
             self.val_replay_buffer = None
@@ -239,10 +263,13 @@ class UmiDataset(BaseDataset):
                 key_latency_steps[key] = shape_meta['obs'][query_key]['latency_steps']
                 key_down_sample_steps[key] = shape_meta['obs'][query_key]['down_sample_steps']
 
+        # Masks are per-frame images to the sampler: read lazily from the
+        # compressed store and skipped by ignore_rgb, so normalizer_data never
+        # loads them.
         sampler = SequenceSampler(
             shape_meta=shape_meta,
             replay_buffer=replay_buffer,
-            rgb_keys=rgb_keys,
+            rgb_keys=rgb_keys + mask_keys,
             lowdim_keys=self.sampler_lowdim_keys,
             key_horizon=key_horizon,
             key_latency_steps=key_latency_steps,
@@ -255,6 +282,7 @@ class UmiDataset(BaseDataset):
         self.shape_meta = shape_meta
         self.replay_buffer = replay_buffer
         self.rgb_keys = rgb_keys
+        self.mask_keys = mask_keys
         self.lowdim_keys = lowdim_keys
         self.key_horizon = key_horizon
         self.key_latency_steps = key_latency_steps
@@ -431,7 +459,7 @@ class UmiDataset(BaseDataset):
         val_set.sampler = SequenceSampler(
             shape_meta=self.shape_meta,
             replay_buffer=replay_buffer,
-            rgb_keys=self.rgb_keys,
+            rgb_keys=self.rgb_keys + self.mask_keys,
             lowdim_keys=self.sampler_lowdim_keys,
             key_horizon=self.key_horizon,
             key_latency_steps=self.key_latency_steps,
@@ -526,7 +554,7 @@ class UmiDataset(BaseDataset):
             normalizer[key] = this_normalizer
 
         # image
-        for key in self.rgb_keys:
+        for key in self.rgb_keys + self.mask_keys:
             normalizer[key] = get_image_identity_normalizer()
         return normalizer
 
@@ -558,6 +586,12 @@ class UmiDataset(BaseDataset):
             obs_dict[key] = np.moveaxis(data[key], -1, 1).astype(np.float32) / 255.
             # T,C,H,W
             del data[key]
+        for key in self.mask_keys:
+            # Absent while the normalizer is fit: the sampler skips image keys.
+            if key not in data:
+                continue
+            # T,H,W of 0/1 -> T,1,H,W
+            obs_dict[key] = data.pop(key)[:, None].astype(np.float32)
         for key in self.sampler_lowdim_keys:
             obs_dict[key] = data[key].astype(np.float32)
             del data[key]

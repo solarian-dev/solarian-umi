@@ -1,7 +1,8 @@
 # UMIPnPSkill (point and pick) configuration.
 #
-# Everything UMISkill reads (conf/umi.yaml) plus the target box. The
-# checkpoint must be trained with obs.bbox bbox_mode=mask_channel.
+# Everything UMISkill reads (conf/umi.yaml) plus the target. The checkpoint
+# must be trained with a target: obs.bbox bbox_mode=mask_channel, or obs.mask
+# (`target: mask`).
 #   UMIPnPSkill(params={"config": "umi_pnp.yaml"})
 # Serve its checkpoint with:
 #   solarian run-policy umi --config umi_pnp.yaml
@@ -13,8 +14,11 @@
 # robot-hosted skill cannot read a box computed on the relay.
 execution_place: ${deployment.pnp_execution_place}
 
-# The camera's calculated field holding the target box, in capture pixels.
-bbox_field: bbox
+# The camera's calculated field holding the target, in capture pixels: a
+# BoundingBoxData (e.g. `bbox`) for a bbox checkpoint, a MaskData (e.g.
+# `target_mask`) for one trained with `target: mask`. The controller starts
+# the tracker on this field.
+target_field: bbox
 
 # ---- Policy server ---------------------------------------------------
 policy_server_url: ${deployment.pnp_policy_server_url}

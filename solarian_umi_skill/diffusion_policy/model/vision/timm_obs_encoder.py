@@ -345,24 +345,24 @@ class TimmObsEncoder(ModuleAttrMixin):
                 assert image_shape is None or image_shape == shape[1:]
                 image_shape = shape[1:]
 
-        # ---- bbox -> mask-channel routing -----------------------------------
-        # Scan low_dim obs entries for `bbox_mode == 'mask_channel'`. Each such
-        # entry is rasterized into a binary mask and concatenated as a 4th
-        # channel onto a target RGB key inside forward(). The bbox itself is
-        # removed from the low-dim concat path so it doesn't get fed twice.
-        # `bbox_mask_map`: rgb_key -> bbox_key (the bbox routed onto that rgb).
+        # ---- target -> mask-channel routing ---------------------------------
+        # The target reaches the ViT as a 4th channel on its rgb key: either a
+        # low_dim box with `bbox_mode: mask_channel`, rasterized in forward(),
+        # or a `type: mask` entry (a (1, H, W) segmentation mask) used as is.
+        # Neither is fed again as a flat feature.
+        # `bbox_mask_map`: rgb_key -> target key routed onto that rgb.
         bbox_mask_map = dict()
         bbox_mask_horizon = dict()  # rgb_key -> expected matching horizon
         for key, attr in obs_shape_meta.items():
-            if attr.get('type', 'low_dim') != 'low_dim':
-                continue
-            if attr.get('bbox_mode', 'low_dim') != 'mask_channel':
-                continue
+            type = attr.get('type', 'low_dim')
             shape = tuple(attr['shape'])
-            if shape != (4,):
-                raise RuntimeError(
-                    f"bbox_mode=mask_channel requires shape [4] (x0,y0,x1,y1) "
-                    f"for key '{key}', got {shape}.")
+            if type == 'low_dim' and attr.get('bbox_mode', 'low_dim') == 'mask_channel':
+                if shape != (4,):
+                    raise RuntimeError(
+                        f"bbox_mode=mask_channel requires shape [4] (x0,y0,x1,y1) "
+                        f"for key '{key}', got {shape}.")
+            elif type != 'mask':
+                continue
             target_rgb_key = attr.get('target_rgb_key')
             if target_rgb_key is None:
                 rgb_candidates = [
@@ -370,28 +370,34 @@ class TimmObsEncoder(ModuleAttrMixin):
                     if a.get('type', 'low_dim') == 'rgb']
                 if len(rgb_candidates) != 1:
                     raise RuntimeError(
-                        f"bbox key '{key}' with bbox_mode=mask_channel did not "
-                        f"specify `target_rgb_key` and there are "
-                        f"{len(rgb_candidates)} candidate rgb keys; please set "
-                        f"`target_rgb_key` explicitly in shape_meta.")
+                        f"target key '{key}' did not specify `target_rgb_key` "
+                        f"and there are {len(rgb_candidates)} candidate rgb "
+                        f"keys; please set `target_rgb_key` explicitly in "
+                        f"shape_meta.")
                 target_rgb_key = rgb_candidates[0]
             if target_rgb_key not in obs_shape_meta or \
                     obs_shape_meta[target_rgb_key].get('type') != 'rgb':
                 raise RuntimeError(
-                    f"bbox key '{key}' targets rgb_key='{target_rgb_key}' "
+                    f"target key '{key}' targets rgb_key='{target_rgb_key}' "
                     f"which is not an rgb obs entry.")
+            if type == 'mask':
+                rgb_hw = tuple(obs_shape_meta[target_rgb_key]['shape'])[1:]
+                if shape != (1,) + rgb_hw:
+                    raise RuntimeError(
+                        f"mask '{key}' must have shape [1, {rgb_hw[0]}, "
+                        f"{rgb_hw[1]}] to match '{target_rgb_key}', got {shape}.")
             if target_rgb_key in bbox_mask_map:
                 raise RuntimeError(
-                    f"Multiple bbox keys are routed to rgb_key="
-                    f"'{target_rgb_key}'. Only one bbox mask channel per "
+                    f"Multiple target keys are routed to rgb_key="
+                    f"'{target_rgb_key}'. Only one mask channel per "
                     f"image is supported.")
             rgb_horizon = int(obs_shape_meta[target_rgb_key]['horizon'])
-            bbox_horizon = int(attr['horizon'])
-            if bbox_horizon != rgb_horizon:
+            target_horizon = int(attr['horizon'])
+            if target_horizon != rgb_horizon:
                 raise RuntimeError(
-                    f"bbox '{key}' (horizon={bbox_horizon}) and target image "
+                    f"target '{key}' (horizon={target_horizon}) and image "
                     f"'{target_rgb_key}' (horizon={rgb_horizon}) must share "
-                    f"the same horizon when bbox_mode=mask_channel.")
+                    f"the same horizon.")
             bbox_mask_map[target_rgb_key] = key
             bbox_mask_horizon[target_rgb_key] = rgb_horizon
 
@@ -447,6 +453,8 @@ class TimmObsEncoder(ModuleAttrMixin):
                     # consumed via the rgb path, not as a flat feature.
                     continue
                 low_dim_keys.append(key)
+            elif type == 'mask':
+                continue
             else:
                 raise RuntimeError(f"Unsupported obs type: {type}")
         
@@ -478,8 +486,8 @@ class TimmObsEncoder(ModuleAttrMixin):
             if not bbox_mask_map:
                 raise RuntimeError(
                     "feature_aggregation=box_pool pools the patch tokens under "
-                    "the target box, so shape_meta needs a bbox entry with "
-                    "bbox_mode=mask_channel.")
+                    "the target, so shape_meta needs a bbox entry with "
+                    "bbox_mode=mask_channel or a type: mask entry.")
             self.vit_grid_size = tuple(model.patch_embed.grid_size)
             self.vit_num_prefix_tokens = model.num_prefix_tokens
         elif model_name.startswith('vit'):
@@ -570,24 +578,26 @@ class TimmObsEncoder(ModuleAttrMixin):
             assert img.shape[2:] == self.key_shape_map[key]
 
             if key in self.bbox_mask_map:
-                # Rasterize the routed bbox into a (B, T, 1, H, W) binary
-                # mask and concat as a 4th channel. Geometric transforms in
-                # MaskAwareImageTransform then crop/resize image+mask
-                # together, keeping the bbox geometry consistent with the
-                # image content the ViT sees.
-                bbox_key = self.bbox_mask_map[key]
-                bbox = obs_dict[bbox_key]
-                assert bbox.shape[0] == batch_size, (
-                    f"bbox '{bbox_key}' batch={bbox.shape[0]} mismatches "
+                # The target becomes a (B, T, 1, H, W) mask concatenated as a
+                # 4th channel. Geometric transforms in MaskAwareImageTransform
+                # then crop/resize image+mask together, keeping the target
+                # aligned with the image content the ViT sees.
+                target_key = self.bbox_mask_map[key]
+                target = obs_dict[target_key]
+                assert target.shape[0] == batch_size, (
+                    f"target '{target_key}' batch={target.shape[0]} mismatches "
                     f"image '{key}' batch={batch_size}")
-                assert bbox.shape[1] == T, (
-                    f"bbox '{bbox_key}' horizon={bbox.shape[1]} mismatches "
+                assert target.shape[1] == T, (
+                    f"target '{target_key}' horizon={target.shape[1]} mismatches "
                     f"image '{key}' horizon={T}")
-                assert bbox.shape[2:] == (4,), (
-                    f"bbox '{bbox_key}' expected shape [4], got "
-                    f"{tuple(bbox.shape[2:])}")
+                assert target.shape[2:] == self.key_shape_map[target_key], (
+                    f"target '{target_key}' expected shape "
+                    f"{self.key_shape_map[target_key]}, got {tuple(target.shape[2:])}")
                 _, _, _, H, W = img.shape
-                mask = rasterize_bbox_to_mask(bbox, H=H, W=W).to(img.dtype)
+                if self.shape_meta['obs'][target_key].get('type') == 'mask':
+                    mask = target.to(img.dtype)
+                else:
+                    mask = rasterize_bbox_to_mask(target, H=H, W=W).to(img.dtype)
                 img = torch.cat([img, mask], dim=2)
 
             img = img.reshape(B*T, *img.shape[2:])

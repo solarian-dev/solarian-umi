@@ -155,30 +155,38 @@ def session_sidecars(session: Path) -> list[Path]:
 def demo_sidecars(session: Path) -> dict[Path, Path]:
     """Demo directory to its sidecar, through the raw_videos symlinks step 00 left.
 
-    Step 00 renames the mapping clip to mapping.mp4, so the mapping demo gets
-    the remaining sidecar whose span best matches its video.
+    The mapping and gripper calibration clips may be renamed (mapping.mp4,
+    gripper_calibration.mp4) away from their sidecar's name, so each gets the
+    remaining sidecar whose span best matches its video.
     """
     by_stem = {p.name[: -len(SIDECAR_SUFFIX)]: p for p in session_sidecars(session)}
     pairs: dict[Path, Path] = {}
+    # A demo moved to excluded_demos leaves a dangling link. It is not paired,
+    # but its sidecar stays claimed so a renamed clip cannot pick it.
+    claimed: set[Path] = set()
     for link in (session / "raw_videos").rglob("*"):
         if not link.is_symlink() or link.suffix.lower() != ".mp4":
             continue
         sidecar = by_stem.get(link.stem)
         if sidecar is not None:
-            pairs[link.resolve().parent] = sidecar
-    mapping = (session / "demos" / "mapping").resolve()
-    if mapping.is_dir() and mapping not in pairs:
-        claimed = set(pairs.values())
-        spare = [p for p in by_stem.values() if p not in claimed]
-        if spare:
-            n, fps = video_frame_count(mapping / "raw_video.mp4")
-            duration = n / fps
+            claimed.add(sidecar)
+            if link.exists():
+                pairs[link.resolve().parent] = sidecar
+    demos = session / "demos"
+    renamed = [d.resolve() for d in [demos / "mapping", *sorted(demos.glob("gripper_calibration*"))]]
+    spare = [p for p in by_stem.values() if p not in claimed]
+    for demo in renamed:
+        if not demo.is_dir() or demo in pairs or not spare:
+            continue
+        n, fps = video_frame_count(demo / "raw_video.mp4")
+        duration = n / fps
 
-            def mismatch(path: Path) -> float:
-                gyro = json.loads(path.read_text(encoding="utf-8"))["1"]["streams"]["GYRO"]["samples"]
-                return abs((gyro[-1]["cts"] - gyro[0]["cts"]) / 1000.0 - duration)
+        def mismatch(path: Path) -> float:
+            gyro = json.loads(path.read_text(encoding="utf-8"))["1"]["streams"]["GYRO"]["samples"]
+            return abs((gyro[-1]["cts"] - gyro[0]["cts"]) / 1000.0 - duration)
 
-            pairs[mapping] = min(spare, key=mismatch)
+        pairs[demo] = min(spare, key=mismatch)
+        spare.remove(pairs[demo])
     return pairs
 
 

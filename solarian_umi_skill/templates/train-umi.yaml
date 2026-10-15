@@ -13,7 +13,9 @@
 #
 #   UMISkill(params={"config": "cup_arrange.yaml"})
 #
-# dataset_path is the dataset.zarr.zip written by `solarian umi-slam`.
+# dataset_path is what `solarian umi-slam` writes: a .solarian.zip session
+# (the default, e.g. datasets/cup_session/dataset.solarian.zip), decoded to
+# the policy resolution when training starts, or a dataset.zarr.zip.
 
 policy: umi
 job_name: umi

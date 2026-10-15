@@ -30,7 +30,8 @@ from solarian_umi_skill.slam.trajectory_check import demo_trajectories, exclude_
 @click.option('-c', '--calibration_dir', type=str, default=None)
 @click.option('--camera', type=click.Choice(['gopro', 'lumi']), default='gopro')
 @click.option('--slam-settings', 'slam_settings', type=str, default=None)
-def main(session_dir, calibration_dir, camera, slam_settings):
+@click.option('--gripper-tag-threshold', 'gripper_tag_threshold', type=float, default=None)
+def main(session_dir, calibration_dir, camera, slam_settings, gripper_tag_threshold):
     script_dir = pathlib.Path(__file__).parent.joinpath('scripts')
     if calibration_dir is None:
         calibration_dir = pathlib.Path(__file__).parent.joinpath('calibration')
@@ -154,6 +155,8 @@ def main(session_dir, calibration_dir, camera, slam_settings):
             str(session),
             *finger_options,
         ]
+        if gripper_tag_threshold is not None:
+            cmd.extend(['--tag_det_threshold', str(gripper_tag_threshold)])
         result = subprocess.run(cmd)
         if result.returncode != 0:
             raise SystemExit(result.returncode)
