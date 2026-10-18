@@ -4,13 +4,13 @@ from solarian_umi_skill import UMISkill
 
 
 def test_module_names_come_from_the_config_file(tmp_path, monkeypatch):
-    conf = tmp_path / "conf"
-    conf.mkdir()
+    conf = tmp_path / "conf" / "skills"
+    conf.mkdir(parents=True)
     (conf / "cup_arrange.yaml").write_text(
         "arm: right_arm\ngripper: right_gripper\ncamera: right_wrist_camera\nfrequency: 8\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("SOLARIAN_CONF_PATH", str(conf))
+    monkeypatch.setenv("SOLARIAN_CONF_PATH", str(conf.parent))
     monkeypatch.delenv("SOLARIAN_DEPLOYMENT", raising=False)
 
     skill = UMISkill(params={"config": "cup_arrange.yaml"})
@@ -23,13 +23,13 @@ def test_module_names_come_from_the_config_file(tmp_path, monkeypatch):
 
 
 def test_params_override_the_file(tmp_path, monkeypatch):
-    conf = tmp_path / "conf"
-    conf.mkdir()
+    conf = tmp_path / "conf" / "skills"
+    conf.mkdir(parents=True)
     (conf / "pick.yaml").write_text(
         "arm: right_arm\ngripper: right_gripper\nfrequency: 8\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("SOLARIAN_CONF_PATH", str(conf))
+    monkeypatch.setenv("SOLARIAN_CONF_PATH", str(conf.parent))
 
     skill = UMISkill(params={"config": "pick.yaml", "frequency": 4, "arm": "left_arm"})
 

@@ -49,7 +49,7 @@ class UmiSlamCommand(BaseCommand):
         "--camera gopro|lumi": "GoPro uses the Max Lens yaml in the ORB-SLAM3 image. "
                                "Lumi remaps the videos into GoPro geometry with the camera's "
                                "calibration (<session>/camera_calibration.json or "
-                               "conf/cameras/<serial>.json, see umi-calibrate-lumi), times the "
+                               "conf/calibrations/cameras/<serial>.json, see umi-calibrate-lumi), times the "
                                "IMU from the .imu.json sidecars and writes its own yaml.",
         "--slam-settings PATH": "ORB-SLAM3 yaml to mount into the container instead. "
                                 "Defaults to the GoPro Max Lens yaml, or the Lumi yaml.",

@@ -27,6 +27,7 @@ import json
 import multiprocessing
 import os
 import re
+import time
 import zipfile
 from pathlib import Path
 
@@ -53,6 +54,8 @@ from solarian_umi_skill.slam.support.policy_frame import PolicyFrame
 register_codecs(verbose=False)
 
 SUFFIX = ".solarian.zip"
+#: Seconds between progress lines while a session decodes.
+PROGRESS_INTERVAL_S = 10.0
 TAGS_DIR = "tags"
 TARGETS_DIR = "targets"
 
@@ -317,6 +320,11 @@ def load_session_replay_buffer(
         )
         ends = replay_buffer.episode_ends[:]
         starts = np.concatenate([[0], ends[:-1]]).astype(int)
+        workers = num_workers or multiprocessing.cpu_count()
+        name = Path(path).name
+        print(f"Decoding {name}: {len(episodes)} episodes, {n_steps} frames, {len(cameras)} camera(s) "
+              f"at {ow}x{oh} on {workers} threads", flush=True)
+        started = time.monotonic()
         _load_targets(replay_buffer, archive, episodes, starts, cameras[0], policy_frame)
 
     def decode(episode: str, cam_id: int, start: int, n: int) -> None:
@@ -338,15 +346,19 @@ def load_session_replay_buffer(
         if k != n:
             raise ValueError(f"{episode}: {camera}.mp4 has {k} frames, the table {n}")
 
-    workers = num_workers or multiprocessing.cpu_count()
+    printed = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         futures = [
             executor.submit(decode, episode, cam_id, int(start), int(end - start))
             for episode, start, end in zip(episodes, starts, ends)
             for cam_id in range(len(cameras))
         ]
-        for future in concurrent.futures.as_completed(futures):
+        for done, future in enumerate(concurrent.futures.as_completed(futures), 1):
             future.result()
+            if time.monotonic() - printed >= PROGRESS_INTERVAL_S and done < len(futures):
+                printed = time.monotonic()
+                print(f"Decoding {name}: {done}/{len(futures)} videos", flush=True)
+    print(f"Decoded {name} in {time.monotonic() - started:.0f}s", flush=True)
     return replay_buffer
 
 

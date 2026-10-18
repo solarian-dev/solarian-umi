@@ -33,7 +33,7 @@ class UmiCalibrateLumiCommand(BaseCommand):
        are drawn. Move the board image through every red cell, tilted 30 to
        45 degrees and straight, near and far. u undoes the last view.
     4. Press c once all edge cells are green and there are 15 views or more.
-       The file goes to conf/cameras/<serial>.json unless --output says
+       The file goes to conf/calibrations/cameras/<serial>.json unless --output says
        otherwise; umi-slam also reads <session>/camera_calibration.json first.
 
     Saved frames stay in .cache/lumi_calibration/<serial>_<time>/; pass that
@@ -47,7 +47,7 @@ class UmiCalibrateLumiCommand(BaseCommand):
         "--serial S": "Camera serial. Required live; defaults to the one stamped into a clip.",
         "--host HOST": "Collector hostname for the live stream (default: solarian-lumi.local).",
         "--port PORT": "Collector stream port (default: 8888).",
-        "--output PATH": "Calibration file. Defaults to conf/cameras/<serial>.json.",
+        "--output PATH": "Calibration file. Defaults to conf/calibrations/cameras/<serial>.json.",
         "--from-remap PATH": "Stand-in from a GoPro remap JSON's camera_intrinsics.",
     }
     examples = (
@@ -137,7 +137,7 @@ class UmiCalibrateLumiCommand(BaseCommand):
             f"RMS {document['intrinsics']['final_reproj_error']:.3f} px on {document['intrinsics']['nr_calib_images']} "
             f"views; f {intr['focal_length']:.1f}, center ({intr['principal_pt_x']:.1f}, {intr['principal_pt_y']:.1f})"
         )
-        output = Path(ns.output or f"conf/cameras/{document['camera_serial']}.json").expanduser()
+        output = Path(ns.output or f"conf/calibrations/cameras/{document['camera_serial']}.json").expanduser()
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         print(f"Wrote {output}")

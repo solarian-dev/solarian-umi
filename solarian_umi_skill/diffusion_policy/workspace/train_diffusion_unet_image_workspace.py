@@ -11,12 +11,6 @@
 # Required for the lazy-import block below to be safe across the file.
 from __future__ import annotations
 
-if __name__ == "__main__":
-    import sys
-    import os
-    import pathlib
-
-
 import os
 import hydra
 import torch
@@ -766,7 +760,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         # run() pays the import cost; the imports are then cached in
         # sys.modules so subsequent calls are free.
         from torch.utils.data import DataLoader
-        import wandb
+        from solarian.tracking.accelerate import accelerate_trackers
         import pickle
         import tqdm
         import shutil
@@ -799,32 +793,18 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 cfg.training.get('freeze_encoder', False)
             )
         )
+        # logging.backend (wandb, solarian_base, none, or a list) picks where
+        # the run goes; tracking drops empty tags and clamps long ones.
+        logging_cfg = OmegaConf.to_container(cfg.logging, resolve=True)
+        log_with, init_kwargs = accelerate_trackers(logging_cfg)
         accelerator = Accelerator(
-            log_with='wandb',
+            log_with=log_with,
             kwargs_handlers=[ddp_kwargs],
         )
-        wandb_cfg = OmegaConf.to_container(cfg.logging, resolve=True)
-        wandb_cfg.pop('project')
-        # Drop tags that resolved to empty strings (e.g. real_size/sim_size
-        # when the dataset filename didn't specify them) and clamp to
-        # wandb's 64-char tag limit so a long dataset-name tag doesn't
-        # crash `wandb.init` with HTTP 400.
-        if isinstance(wandb_cfg.get('tags'), list):
-            cleaned = []
-            for t in wandb_cfg['tags']:
-                if not t:
-                    continue
-                if isinstance(t, str) and len(t) > 64:
-                    accelerator.print(
-                        f"[wandb] truncating tag to 64 chars: {t!r} -> {t[:64]!r}"
-                    )
-                    t = t[:64]
-                cleaned.append(t)
-            wandb_cfg['tags'] = cleaned
         accelerator.init_trackers(
             project_name=cfg.logging.project,
             config=OmegaConf.to_container(cfg, resolve=True),
-            init_kwargs={"wandb": wandb_cfg}
+            init_kwargs=init_kwargs,
         )
 
         # resume training
@@ -1633,14 +1613,3 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 self.epoch += 1
 
         accelerator.end_training()
-
-@hydra.main(
-    version_base=None,
-    config_path=str(pathlib.Path(__file__).parent.parent.joinpath("config")), 
-    config_name=pathlib.Path(__file__).stem)
-def main(cfg):
-    workspace = TrainDiffusionUnetImageWorkspace(cfg)
-    workspace.run()
-
-if __name__ == "__main__":
-    main()

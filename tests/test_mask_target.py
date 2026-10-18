@@ -1,4 +1,6 @@
-"""target: mask — the object's segmentation instead of a box as the 4th ViT channel."""
+"""The mask task: the object's segmentation instead of a box as the 4th ViT channel."""
+
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -11,8 +13,10 @@ from solarian_umi_skill.diffusion_policy.model.vision.timm_obs_encoder import (
     TimmObsEncoder,
     rasterize_bbox_to_mask,
 )
-from solarian_umi_skill.trainer import UmiTrainConfig, UmiTrainer, has_mask, train_overrides
-from solarian_umi_skill.training import config_dir
+from solarian.core.ai.system1.trainer_registry import load_train_config
+from solarian_umi_skill.trainer import UmiTrainer, has_mask, uses_mask
+
+TRAINING = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "templates" / "training"
 
 
 def _encoder_meta(target: str) -> dict:
@@ -169,43 +173,30 @@ def test_dataset_samples_the_mask_per_frame_as_a_channel(tmp_path):
 
 # ---- trainer ---------------------------------------------------------------
 
-def _cfg(**overrides) -> UmiTrainConfig:
-    data = dict(policy="umi", job_name="pick", config_name="train_diffusion_unet_timm_umi_pick_bbox",
-                dataset_path="pick.zarr.zip")
-    data.update(overrides)
-    return UmiTrainConfig.model_validate(data)
-
-
-def test_target_mask_selects_the_mask_task(tmp_path):
-    assert "task=umi_pick_mask" not in train_overrides(_cfg(), str(tmp_path))
-    cmd = train_overrides(_cfg(target="mask", overrides=["n_action_steps=8"]), str(tmp_path))
-    assert "task=umi_pick_mask" in cmd and "bbox_mode=mask" in cmd
-    assert cmd[-1] == "n_action_steps=8"
-
-
-def test_mask_config_composes_with_a_mask_and_no_box(tmp_path):
+def _cfg(name: str = "umi_pick_mask", *overrides: str):
     from hydra import compose, initialize_config_dir
-    from hydra.core.global_hydra import GlobalHydra
-    from omegaconf import OmegaConf
 
-    from solarian_umi_skill.diffusion_policy.dataset_name import parse_dataset_field
+    with initialize_config_dir(version_base=None, config_dir=str(TRAINING)):
+        cfg = compose(config_name=name, overrides=list(overrides))
+    return load_train_config(cfg)[2]
 
-    OmegaConf.register_new_resolver("eval", eval, replace=True)
-    OmegaConf.register_new_resolver("parse_dataset_field", parse_dataset_field, replace=True)
-    GlobalHydra.instance().clear()
-    cfg = _cfg(target="mask", bbox_conditioning="box_pool",
-               dataset_path="pick_lego_pile-no_mirror-real_368-bbox-mask.zarr.zip")
-    with initialize_config_dir(version_base=None, config_dir=str(config_dir())):
-        composed = compose(cfg.config_name, overrides=train_overrides(cfg, str(tmp_path)))
-    OmegaConf.resolve(composed)
 
-    obs = composed.task.shape_meta.obs
+def test_the_mask_template_observes_a_mask_and_no_box():
+    cfg = _cfg()
+    umi = cfg.umi_config()
+
+    obs = umi["task"]["shape_meta"]["obs"]
     assert "bbox" not in obs
-    assert obs.mask.type == "mask" and list(obs.mask.shape) == [1, 224, 224]
-    assert obs.mask.target_rgb_key == "camera0_rgb"
-    assert "mask" in composed.task.dataset.shape_meta.obs
-    assert composed.policy.obs_encoder.feature_aggregation == "box_pool"
-    assert composed.bbox_mode == "mask"
+    assert obs["mask"]["type"] == "mask" and obs["mask"]["shape"] == [1, 224, 224]
+    assert obs["mask"]["target_rgb_key"] == "camera0_rgb"
+    assert "mask" in umi["task"]["dataset"]["shape_meta"]["obs"]
+    assert umi["policy"]["obs_encoder"]["feature_aggregation"] == "box_pool"
+    assert umi["bbox_mode"] == "mask"
+    assert uses_mask(cfg.task)
+
+
+def test_a_box_template_does_not_use_a_mask():
+    assert not uses_mask(_cfg("umi_pick").task)
 
 
 def test_has_mask_reads_the_zip_index(tmp_path):
@@ -220,6 +211,7 @@ def test_mask_training_refuses_a_dataset_without_masks(tmp_path, monkeypatch):
     monkeypatch.setattr("solarian_umi_skill.training.run_training", fail)
     with_mask = _write_zarr(tmp_path / "with.zarr.zip")
     without = _write_zarr(tmp_path / "without.zarr.zip", with_mask=False)
-    cfg = _cfg(target="mask", dataset_path=with_mask, val_dataset_path=without)
+    cfg = _cfg("umi_pick_mask", f"task.dataset_mix=[{{path:'{with_mask}',weight:1.0}}]",
+               f"task.dataset.val_dataset_path='{without}'")
     with pytest.raises(ValueError, match="zarr_add_masks"):
         UmiTrainer(cfg, output_dir=str(tmp_path)).train()

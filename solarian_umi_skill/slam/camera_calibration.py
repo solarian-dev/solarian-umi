@@ -339,7 +339,7 @@ def stand_in_from_remap(remap_json: Path, *, serial: str, size: tuple[int, int] 
 def find_calibration(session: Path, serial: str, conf_dirs: list[Path]) -> Path:
     """The session's own calibration, else the camera's file in a conf dir."""
     candidates = [session / CALIBRATION_FILENAME]
-    candidates += [conf / "cameras" / f"{serial}.json" for conf in conf_dirs]
+    candidates += [conf / "calibrations" / "cameras" / f"{serial}.json" for conf in conf_dirs]
     for path in candidates:
         if path.is_file():
             data = json.loads(path.read_text(encoding="utf-8"))

@@ -10,13 +10,13 @@ from solarian_umi_skill.umi.policy_image import PolicyImagePipeline
 
 
 def _conf(tmp_path, monkeypatch, text):
-    conf = tmp_path / "conf"
-    conf.mkdir()
+    conf = tmp_path / "conf" / "skills"
+    conf.mkdir(parents=True)
     (conf / "pnp.yaml").write_text(
         "arm: right_arm\ngripper: right_gripper\ncamera: right_wrist_camera\n" + text,
         encoding="utf-8",
     )
-    monkeypatch.setenv("SOLARIAN_CONF_PATH", str(conf))
+    monkeypatch.setenv("SOLARIAN_CONF_PATH", str(conf.parent))
     monkeypatch.delenv("SOLARIAN_DEPLOYMENT", raising=False)
 
 

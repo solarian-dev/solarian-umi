@@ -13,6 +13,7 @@ import numpy as np
 import pyarrow.parquet as pq
 import pytest
 import zarr
+from hydra import compose, initialize_config_dir
 
 from solarian_umi_skill.diffusion_policy.common.replay_buffer import ReplayBuffer
 from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
@@ -22,8 +23,10 @@ from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
     load_session_replay_buffer,
     write_targets,
 )
+from solarian_umi_skill.diffusion_policy.dataset import umi_dataset
 from solarian_umi_skill.diffusion_policy.dataset.umi_dataset import UmiDataset
-from solarian_umi_skill.trainer import UmiTrainConfig, UmiTrainer, has_mask
+from solarian.core.ai.system1.trainer_registry import load_train_config
+from solarian_umi_skill.trainer import UmiTrainer, has_mask
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "slam" / "scripts"
 VIDEO_WH = (64, 48)
@@ -231,14 +234,15 @@ def test_umi_dataset_and_trainer_take_a_solarian_zip(session, monkeypatch):
     started = []
     monkeypatch.setattr("solarian_umi_skill.training.run_training",
                         lambda cfg, out: started.append(cfg))
-    cfg = UmiTrainConfig.model_validate(
-        dict(policy="umi", job_name="pick", dataset_path=str(session)))
+    training = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "templates" / "training"
+    with initialize_config_dir(version_base=None, config_dir=str(training)):
+        composed = compose(config_name="umi", overrides=[f"task.dataset_mix=[{{path:'{session}',weight:1.0}}]"])
+    cfg = load_train_config(composed)[2]
     UmiTrainer(cfg, output_dir=str(session.parent / "out")).train()
     assert started
 
 
 def test_a_cached_session_is_decoded_once(session, tmp_path, monkeypatch):
-    pytest.importorskip("lmdb")
     first = UmiDataset(shape_meta=_shape_meta(), dataset_path=str(session),
                        cache_dir=str(tmp_path), pose_repr=POSE_REPR)
 
@@ -253,3 +257,23 @@ def test_a_cached_session_is_decoded_once(session, tmp_path, monkeypatch):
 
     np.testing.assert_array_equal(first.replay_buffer["camera0_rgb"][:],
                                   second.replay_buffer["camera0_rgb"][:])
+
+
+def test_an_interrupted_cache_write_is_redone(session, tmp_path, monkeypatch):
+    real = umi_dataset.open_replay_buffer
+
+    def crash(dataset_path, store, out_res):
+        real(dataset_path, store, out_res)
+        raise RuntimeError("killed before the cache was renamed into place")
+
+    monkeypatch.setattr(umi_dataset, "open_replay_buffer", crash)
+    with pytest.raises(RuntimeError):
+        UmiDataset(shape_meta=_shape_meta(), dataset_path=str(session),
+                   cache_dir=str(tmp_path), pose_repr=POSE_REPR)
+    assert not list(tmp_path.glob("*.zarr"))
+
+    monkeypatch.setattr(umi_dataset, "open_replay_buffer", real)
+    dataset = UmiDataset(shape_meta=_shape_meta(), dataset_path=str(session),
+                         cache_dir=str(tmp_path), pose_repr=POSE_REPR)
+    assert len(list(tmp_path.glob("*.zarr"))) == 1
+    assert dataset.replay_buffer.n_episodes > 0

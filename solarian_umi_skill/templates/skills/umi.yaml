@@ -1,7 +1,8 @@
 # UMISkill configuration.
 #
-# solarian install copies this to conf/umi.yaml. Copy the file again
-# (conf/cup_arrange.yaml, conf/pick_lego.yaml, ...) for each policy, then
+# solarian install copies this to conf/skills/umi.yaml. Copy the file again
+# (conf/skills/cup_arrange.yaml, conf/skills/pick_lego.yaml, ...) for each
+# policy, then
 # start the skill with that filename:
 #   UMISkill(params={"config": "cup_arrange.yaml"})
 # Serve its checkpoint with:
@@ -68,14 +69,14 @@ discard_actions: false
 # already name the instant the reading was true -- and the recorder sees the
 # same corrected stamps, which a skill-local copy could never give it.
 # Measured by `solarian calibrate-arm` / `calibrate-gripper` /
-# `calibrate-camera-latency`, each writing its own conf/<module>.yaml.
+# `calibrate-camera-latency`, each writing its own conf/modules/<module>.yaml.
 camera_down_sample_steps: 1
 arm_down_sample_steps: 1
 gripper_down_sample_steps: 1
 
 # This skill warps the observation into the GoPro plane before cropping, so
 # what reaches the crop has the aspect of remap_width/height in
-# conf/right_wrist_camera.yaml, not the 4:3 the sensor captures. UMI eval's
+# conf/modules/right_wrist_camera.yaml, not the 4:3 the sensor captures. UMI eval's
 # resize-then-center-crop then inscribes the fisheye circle in 224×224.
 # Set true only as a fallback if the Pi is stuck on 16:9 1080p.
 letterbox_to_square: false
@@ -91,7 +92,7 @@ debug_image_max_dumps: 5
 # Override with a path, or pass gold=<path> to `solarian calibrate-umi-camera`.
 umi_gold_image: null
 # Directory for one .npz per inference (the policy's exact input, the raw chunk,
-# the TCP pose) that primarykey's scripts/diagnose read with --obs-dir. Each
+# the TCP pose) that solarian_base's scripts/diagnose read with --obs-dir. Each
 # skill run writes a subfolder named by its start time.
 dump_policy_obs: null
 

@@ -19,7 +19,7 @@ module's ``PoseTrajectoryInterpolator`` and the gripper module's
 
 Which policy and which robot wiring run is the yaml passed as
 ``params["config"]`` (a filename in the project ``conf/``, or a path).
-Copy ``conf/umi.yaml`` to define another policy.
+Copy ``conf/skills/umi.yaml`` to define another policy.
 """
 
 import logging
@@ -37,6 +37,7 @@ from solarian.core.execution import ExecutionPlace
 from solarian.core.ai.system1.skill import Skill
 from solarian.core.ai.system1.policy_client import PolicyClient
 from solarian.core.clock_sync import LatencyEma, synced_time
+from solarian.core.conf_paths import conf_dir, module_config_path, skill_config_path
 from solarian.core.module_yaml import read_module_field
 from solarian.utils.status_board import StatusBoard
 
@@ -96,14 +97,6 @@ class UMISkill(Skill):
             self.execution_place = ExecutionPlace(str(cfg["execution_place"]).lower())
 
     @classmethod
-    def resolve_config_path(cls, config: str) -> pathlib.Path:
-        """A bare filename is ``conf/<name>``; anything with a directory is used as given."""
-        path = pathlib.Path(config)
-        if path.is_absolute() or len(path.parts) > 1:
-            return path
-        return cls._project_conf_dir() / path
-
-    @classmethod
     def load_config_file(cls, path: pathlib.Path) -> dict:
         """The yaml is the whole config; ``${deployment.*}`` is resolved against this host."""
         from solarian.utils.configs import resolve_with_deployment
@@ -111,7 +104,7 @@ class UMISkill(Skill):
         if not path.is_file():
             raise FileNotFoundError(
                 f"UMISkill config not found: {path}. "
-                "params['config'] is a filename in conf/ or a path to a yaml."
+                "params['config'] is a filename in conf/skills/ or a path to a yaml."
             )
         with open(path, "r") as f:
             loaded = yaml.safe_load(f) or {}
@@ -122,10 +115,10 @@ class UMISkill(Skill):
         raw = self.params.get("config")
         if not raw:
             raise ValueError(
-                "UMISkill requires params['config']: a yaml filename in conf/ "
+                "UMISkill requires params['config']: a yaml filename in conf/skills/ "
                 "(for example 'cup_arrange.yaml') or a path to one."
             )
-        config = type(self).load_config_file(type(self).resolve_config_path(str(raw)))
+        config = type(self).load_config_file(skill_config_path(str(raw)))
         for key, value in self.params.items():
             if key == "config":
                 continue
@@ -604,7 +597,7 @@ class UMISkill(Skill):
         self._write_rgb_strip(out_path, frames)
 
     def _dump_policy_obs(self, obs_dict_np: dict, raw_action, env_obs: dict) -> None:
-        """One ``.npz`` per inference for primarykey's ``scripts/diagnose``.
+        """One ``.npz`` per inference for solarian_base's ``scripts/diagnose``.
 
         ``obs.<key>`` is exactly what the policy server received, ``raw_action``
         the chunk it returned, ``eef_pose`` the current TCP pose (position m +
@@ -772,7 +765,7 @@ class UMISkill(Skill):
         """
         import yaml
 
-        path = self._project_conf_dir() / f"{self.params['camera']}.yaml"
+        path = module_config_path(self.params['camera'])
         with open(path, "r") as fp:
             doc = yaml.safe_load(fp) or {}
         sensors = doc.get("sensors") or {}
@@ -794,7 +787,7 @@ class UMISkill(Skill):
                 sensor.get("optical_remap"),
                 frame_wh,
                 out_wh=out if all(out) else None,
-                conf_dir=self._project_conf_dir(),
+                conf_dir=conf_dir(),
             )
             self._camera_remap_wh = frame_wh
         return self._camera_remap

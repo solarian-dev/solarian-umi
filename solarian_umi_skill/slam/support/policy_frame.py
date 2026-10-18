@@ -69,7 +69,7 @@ class PolicyFrame:
         """Source-pixel boxes ``(..., 4+)`` in output pixels.
 
         Columns past ``(x0, y0, x1, y1)`` pass through. A row with a negative
-        coordinate is primarykey's "no box" marker and is kept as it is.
+        coordinate is solarian_base's "no box" marker and is kept as it is.
         """
         x0, y0, cw, ch = crop_window(self.in_res, self.out_res)
         ow, oh = self.out_res

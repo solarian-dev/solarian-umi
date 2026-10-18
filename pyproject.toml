@@ -64,10 +64,9 @@ include = ["solarian_umi_skill*"]
 
 [tool.setuptools.package-data]
 solarian_umi_skill = [
-    "templates/*.yaml",
+    "templates/skills/*.yaml",
+    "templates/training/*.yaml",
     "slam/LICENSE.umi",
     "diffusion_policy/LICENSE.umi",
     "slam/calibration/*",
-    "diffusion_policy/config/*.yaml",
-    "diffusion_policy/config/task/*.yaml",
 ]

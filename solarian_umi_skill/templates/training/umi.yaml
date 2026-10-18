@@ -1,19 +1,174 @@
+# UMISkill training without a target: the UMI cup-in-the-wild run
+# (train_diffusion_unet_timm_umi_cup_wild.yaml), camera and proprioception
+# only. solarian install copies this to conf/training/umi.yaml once. Copy it
+# per run and change job_name and task.dataset_mix:
+#
+#   conf/training/cup_arrange.yaml    job_name: cup_arrange
+#   solarian train --conf conf/training/cup_arrange
+#
+# The whole run is in this file: the trainer, the data, the model, the
+# optimizer, the schedule and the tracking. Every key is required; any of
+# them is overridden on the command line as key=value.
+#
+# Checkpoints are written to models/<job_name>/checkpoints/latest.ckpt.
+# Point the matching skill yaml (a copy of conf/skills/umi.yaml) at that file:
+#
+#   conf/skills/cup_arrange.yaml
+#     policy_server.checkpoint: models/cup_arrange/checkpoints/latest.ckpt
+#
+#   UMISkill(params={"config": "cup_arrange.yaml"})
+
+# The installed trainer plugin that runs this file (solarian.trainers).
+trainer: umi
+job_name: umi
+# Run folder: checkpoints go to <output_dir>/checkpoints/, beside
+# logs.json.txt and normalizer.pkl. null is models/<job_name>.
+output_dir: null
+# solarian modal-train settings (gpu_type, gpus, volume, profile, ...).
+# null: local training only.
+modal: null
+
+# Everything below is the UMI training config, as `python train.py
+# --config-name` reads it in the UMI repo.
+#
 # Adapted from Universal Manipulation Interface.
 # Copyright (c) 2023 Columbia Artificial Intelligence and Robotics Lab.
 # https://github.com/real-stanford/universal_manipulation_interface
 # Licensed under the MIT License. The full text is LICENSE.umi
 # beside this package.
 
-defaults:
-  - _self_
-  - task: umi_cup_wild
-
 name: train_diffusion_unet_timm
 _target_: solarian_umi_skill.diffusion_policy.workspace.train_diffusion_unet_image_workspace.TrainDiffusionUnetImageWorkspace
+
+# The task, UMI's task/umi_cup_wild.yaml inlined.
+task:
+  name: umi_pick_lego
+
+  camera_obs_latency: 0.125
+  robot_obs_latency: 0.0001
+  gripper_obs_latency: 0.02
+  dataset_frequeny: 0 #59.94
+  obs_down_sample_steps: 3 # 3, 1
+
+  low_dim_obs_horizon: 2
+  img_obs_horizon: 1
+  action_horizon: 16
+  ignore_proprioception: False
+
+  shape_meta: &shape_meta
+    # acceptable types: rgb, low_dim
+    obs:
+      camera0_rgb:
+        shape: [3, 224, 224]
+        horizon: ${task.img_obs_horizon} # int
+        latency_steps: 0 # float
+        down_sample_steps: ${task.obs_down_sample_steps} # int
+        type: rgb
+        ignore_by_policy: False
+      robot0_eef_pos:
+        shape: [3]
+        horizon: ${task.low_dim_obs_horizon} # int
+        latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.robot_obs_latency}) * ${task.dataset_frequeny}'} # float
+        down_sample_steps: ${task.obs_down_sample_steps} # float
+        type: low_dim
+        ignore_by_policy: ${task.ignore_proprioception}
+      # robot0_eef_pos_abs:
+      #   shape: [1]
+      #   axis: [2] # 2 means z-axis
+      #   horizon: ${task.low_dim_obs_horizon} # int
+      #   latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.robot_obs_latency}) * ${task.dataset_frequeny}'} # float
+      #   down_sample_steps: ${task.obs_down_sample_steps} # float
+      #   type: low_dim
+      # robot0_eef_rot_axis_angle_abs:
+      #   shape: [2]
+      #   axis: [0, 1] # yaw and pitch
+      #   horizon: ${task.low_dim_obs_horizon} # int
+      #   latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.robot_obs_latency}) * ${task.dataset_frequeny}'} # float
+      #   down_sample_steps: ${task.obs_down_sample_steps} # float
+      #   type: low_dim
+      robot0_eef_rot_axis_angle:
+        raw_shape: [3]
+        shape: [6]
+        horizon: ${task.low_dim_obs_horizon} # int
+        latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.robot_obs_latency}) * ${task.dataset_frequeny}'} # float
+        down_sample_steps: ${task.obs_down_sample_steps} # float
+        type: low_dim
+        rotation_rep: rotation_6d
+        ignore_by_policy: ${task.ignore_proprioception}
+      robot0_gripper_width:
+        shape: [1]
+        horizon: ${task.low_dim_obs_horizon} # int
+        latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.gripper_obs_latency}) * ${task.dataset_frequeny}'} # float
+        down_sample_steps: ${task.obs_down_sample_steps} # float
+        type: low_dim
+        ignore_by_policy: ${task.ignore_proprioception}
+
+      # pose with respect to episode start
+      # robot0_eef_pos_wrt_start:
+      #   shape: [3]
+      #   horizon: ${task.low_dim_obs_horizon} # int
+      #   latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.robot_obs_latency}) * ${task.dataset_frequeny}'} # float
+      #   down_sample_steps: ${task.obs_down_sample_steps} # float
+      #   type: low_dim
+      #   ignore_by_policy: ${task.ignore_proprioception}
+      robot0_eef_rot_axis_angle_wrt_start:
+        raw_shape: [3]
+        shape: [6]
+        horizon: ${task.low_dim_obs_horizon} # int
+        latency_steps: ${eval:'(${task.camera_obs_latency} - ${task.robot_obs_latency}) * ${task.dataset_frequeny}'} # float
+        down_sample_steps: ${task.obs_down_sample_steps} # float
+        type: low_dim
+        ignore_by_policy: ${task.ignore_proprioception}
+    action: 
+      shape: [10]
+      horizon: ${task.action_horizon}
+      latency_steps: 0 # float
+      down_sample_steps: ${task.obs_down_sample_steps} # int
+      rotation_rep: rotation_6d
+
+  task_name: &task_name umi
+  # The datasets: a .solarian.zip session, a session directory or a
+  # .zarr.zip. Each sample is drawn from entry i with probability
+  # weight_i / sum(weights), whatever its size; validation comes from the
+  # first unless dataset.val_dataset_path is set.
+  dataset_path: ${task.dataset_mix[0].path}
+  dataset_mix:
+    - path: datasets/cup_session/dataset.solarian.zip
+      weight: 1.0
+  # Samples per epoch, drawn by weight. null: as many as the datasets hold
+  # together. An epoch is samples_per_epoch / batch_size steps and only sets
+  # the cadence of validation, sampling and checkpoints; the run is
+  # training.num_epochs of them.
+  samples_per_epoch: null
+  pose_repr: &pose_repr
+    obs_pose_repr: relative # abs or rel
+    action_pose_repr: relative # abs or rel or delta
+
+  env_runner:
+    _target_: solarian_umi_skill.diffusion_policy.env_runner.real_pusht_image_runner.RealPushTImageRunner
+
+  dataset:
+    _target_: solarian_umi_skill.diffusion_policy.dataset.umi_dataset.UmiDataset
+    shape_meta: *shape_meta
+    dataset_path: ${task.dataset_path}
+    # Decoded once per machine, then copied by every GPU rank; must be local disk.
+    cache_dir: /tmp/solarian_umi_cache
+    pose_repr: *pose_repr
+    action_padding: False
+    temporally_independent_normalization: False
+    repeat_frame_prob: 0.0
+    max_duration: null
+    seed: 42
+    val_ratio: 0.05
+    # Validate on this dataset and train on every episode of the datasets.
+    # null: a random task.dataset.val_ratio share of the first one's episodes.
+    val_dataset_path: null
 
 # task_name: ${task.name}
 shape_meta: ${task.shape_meta}
 exp_name: "default"
+# Per GPU.
+# Per GPU. Lower it if the GPU runs out of memory.
 batch_size: 64
 # visual_encoder: "vit_base_patch16_clip_224.openai"
 # visual_encoder_tag: "vitb"
@@ -22,7 +177,7 @@ visual_encoder_tag: "vitl"
 # visual_encoder: "resnet34.a1_in1k"
 # visual_encoder_tag: "resnet34"
 model_type: "unet"
-# this will be overridden at call time
+# The workspace trains on one GPU; a tag only.
 num_gpus: 1
 
 
@@ -37,11 +192,8 @@ real_data_size: ${parse_dataset_field:${task.dataset_path},real_data_size,null}
 sim_data_size: ${parse_dataset_field:${task.dataset_path},sim_data_size,null}
 bbox: ${parse_dataset_field:${task.dataset_path},bbox,no_bbox}
 task_name: ${parse_dataset_field:${task.dataset_path},data_task,pick_lego}
-
-# Override dataset path for fine-tuning
-# This will override the dataset_path in task/umi.yaml
-# Uncomment and set to your new dataset path:
-# task.dataset_path: "path/to/your/new/dataset.zarr.zip"
+# How the target reaches the policy; a wandb tag.
+bbox_mode: none
 
 n_action_steps: 8
 
@@ -88,8 +240,11 @@ policy:
     global_pool: ''
 
     # 'avg' or 'max' or 'soft_attention' or 'spatial_embedding' or 'transformer' or 'attention_pool_2d'
-    feature_aggregation: 'attention_pool_2d'
-    # feature_aggregation: null
+    # null: the ViT summary (CLS) token, as the exp8 checkpoints.
+    # box_pool: CLS plus the patch tokens under the target, averaged, plus
+    # its bounding corners. Wider conditioning; a cls
+    # training.init_from_ckpt is widened with zero weights for the new inputs.
+    feature_aggregation: attention_pool_2d
     position_encording: 'sinusoidal' # 'learnable' or 'sinusoidal'. it only works for transformer
 
     # it only works for resnet. 32 (7x7) or 16 (14x14)
@@ -190,7 +345,12 @@ training:
   device: "cuda:0"
   seed: 42
   debug: False
-  resume: False
+  # Continue an interrupted run from <output_dir>/checkpoints/latest.ckpt at
+  # its next epoch; the UMI config's training.num_epochs stays the total.
+  resume: false
+  # Start from this checkpoint's weights, with a fresh optimizer, LR schedule
+  # and epoch count. null trains from the pretrained backbone.
+  init_from_ckpt: null
   # optimization
   lr_scheduler: cosine
   lr_warmup_steps: 500
@@ -213,9 +373,10 @@ training:
   tqdm_interval_sec: 1.0
 
 logging:
+  backend: solarian_base  # solarian_base, wandb, none, or a list
   project: umi
-  resume: False
   mode: online
+  resume: False
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
   tags:
     - "${name}"
@@ -240,6 +401,8 @@ logging:
     - "${eval:'(\"real\" if ${real_data_size} > 0 else \"no_real\") if ${real_data_size} is not None else \"\"'}"
     - "${eval:'(\"sim\" if ${sim_data_size} > 0 else \"no_sim\") if ${sim_data_size} is not None else \"\"'}"
     - "${bbox}"
+    - "bbox_mode:${bbox_mode}"
+    - "aggregation:${policy.obs_encoder.feature_aggregation}"
   id: null
   group: ${task_name}_${model_type}
 
@@ -256,11 +419,3 @@ multi_run:
   run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
   wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
 
-hydra:
-  job:
-    override_dirname: ${name}
-  run:
-    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
-  sweep:
-    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
-    subdir: ${hydra.job.num}

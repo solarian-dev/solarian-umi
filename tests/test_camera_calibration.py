@@ -132,10 +132,10 @@ def test_stand_in_scales_checkerboard_intrinsics_to_the_recorded_mode(tmp_path):
 
 def test_find_calibration_prefers_the_session_then_conf_and_checks_serial(tmp_path):
     session, conf = tmp_path / "session", tmp_path / "conf"
-    (conf / "cameras").mkdir(parents=True)
+    (conf / "calibrations" / "cameras").mkdir(parents=True)
     session.mkdir()
-    (conf / "cameras" / "LUMI1.json").write_text(json.dumps({"camera_serial": "LUMI1"}))
-    assert find_calibration(session, "LUMI1", [conf]) == conf / "cameras" / "LUMI1.json"
+    (conf / "calibrations" / "cameras" / "LUMI1.json").write_text(json.dumps({"camera_serial": "LUMI1"}))
+    assert find_calibration(session, "LUMI1", [conf]) == conf / "calibrations" / "cameras" / "LUMI1.json"
 
     (session / "camera_calibration.json").write_text(json.dumps({"camera_serial": "LUMI2"}))
     with pytest.raises(SystemExit, match="LUMI2"):

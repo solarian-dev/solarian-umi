@@ -27,11 +27,15 @@ def test_copied_files_carry_the_umi_attribution():
         "slam/run_pipeline.py",
         "slam/scripts/07_generate_replay_buffer.py",
         "diffusion_policy/workspace/train_diffusion_unet_image_workspace.py",
-        "diffusion_policy/config/train_diffusion_unet_timm_umi_cup_wild.yaml",
     ):
         text = (PACKAGE / rel).read_text(encoding="utf-8")
         assert text.startswith(f"# {HEADER}")
         assert "https://github.com/real-stanford/universal_manipulation_interface" in text
+    # A training file opens with its run; the attribution heads the UMI part.
+    for path in sorted((PACKAGE / "templates" / "training").glob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        assert f"# {HEADER}" in text
+        assert text.index(f"# {HEADER}") < text.index("\nname: train_diffusion_unet_timm")
 
 
 def test_the_default_dataset_is_a_solarian_session(tmp_path):

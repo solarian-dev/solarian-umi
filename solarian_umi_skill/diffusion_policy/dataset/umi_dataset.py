@@ -97,6 +97,41 @@ def open_replay_buffer(dataset_path: str, store, out_res: tuple) -> ReplayBuffer
         return ReplayBuffer.copy_from_store(src_store=zip_store, store=store)
 
 
+def load_replay_buffer(dataset_path: str, out_res: tuple, cache_dir: Optional[str]) -> ReplayBuffer:
+    """``open_replay_buffer`` into memory, through a decoded copy in ``cache_dir``.
+
+    One process decodes; the others sharing ``cache_dir`` (GPU ranks on one
+    machine) wait on its lock and copy the finished chunks without decoding.
+    The copy is keyed by the dataset's modification stamp and ``out_res``, and
+    renamed into place only once complete, so a crashed writer leaves none.
+    None decodes straight into memory.
+    """
+    if cache_dir is None:
+        return open_replay_buffer(dataset_path, zarr.MemoryStore(), out_res)
+    if is_session(dataset_path):
+        mod_time = session_stamp(dataset_path)
+    else:
+        mod_time = os.path.getmtime(dataset_path)
+    stamp = datetime.fromtimestamp(mod_time).isoformat()
+    stem_name = os.path.basename(os.path.normpath(dataset_path)).split('.')[0]
+    cache_name = f'{stem_name}_{stamp}_{out_res[0]}x{out_res[1]}'
+    cache_dir = pathlib.Path(os.path.expanduser(cache_dir))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f'{cache_name}.zarr'
+    lock_path = cache_dir / f'{cache_name}.lock'
+    print(f'Waiting for the cache lock {lock_path}', flush=True)
+    with FileLock(lock_path):
+        if not cache_path.exists():
+            partial_path = cache_dir / f'{cache_name}.zarr.partial'
+            shutil.rmtree(partial_path, ignore_errors=True)
+            open_replay_buffer(dataset_path, zarr.DirectoryStore(str(partial_path)), out_res)
+            partial_path.rename(cache_path)
+            print(f'Cache written to {cache_path}', flush=True)
+    replay_buffer = ReplayBuffer.copy_from_path(str(cache_path), store=zarr.MemoryStore())
+    print(f'Loaded the cache {cache_path}', flush=True)
+    return replay_buffer
+
+
 def mix_sampler(lengths, weights, num_samples: Optional[int]) -> torch.utils.data.Sampler:
     """Sampler over a ConcatDataset of parts with ``lengths``.
 
@@ -157,46 +192,7 @@ class UmiDataset(BaseDataset):
         self.action_pose_repr = self.pose_repr.get('action_pose_repr', 'rel')
         
         out_res = _policy_res(shape_meta)
-        if cache_dir is None:
-            replay_buffer = open_replay_buffer(dataset_path, zarr.MemoryStore(), out_res)
-        else:
-            # determine path name
-            if is_session(dataset_path):
-                mod_time = session_stamp(dataset_path)
-            else:
-                mod_time = os.path.getmtime(dataset_path)
-            stamp = datetime.fromtimestamp(mod_time).isoformat()
-            stem_name = os.path.basename(os.path.normpath(dataset_path)).split('.')[0]
-            cache_name = '_'.join([stem_name, stamp])
-            if is_session(dataset_path):
-                # A session is decoded to the policy resolution, so that keys the cache too.
-                cache_name += f'_{out_res[0]}x{out_res[1]}'
-            cache_dir = pathlib.Path(os.path.expanduser(cache_dir))
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            cache_path = cache_dir.joinpath(cache_name + '.zarr.mdb')
-            lock_path = cache_dir.joinpath(cache_name + '.lock')
-            
-            # load cached file
-            print('Acquiring lock on cache.')
-            with FileLock(lock_path):
-                # cache does not exist
-                if not cache_path.exists():
-                    try:
-                        with zarr.LMDBStore(str(cache_path),     
-                            writemap=True, metasync=False, sync=False, map_async=True, lock=False
-                            ) as lmdb_store:
-                            print(f"Copying data to {str(cache_path)}")
-                            open_replay_buffer(dataset_path, lmdb_store, out_res)
-                        print("Cache written to disk!")
-                    except Exception as e:
-                        shutil.rmtree(cache_path)
-                        raise e
-            
-            # open read-only lmdb store
-            store = zarr.LMDBStore(str(cache_path), readonly=True, lock=False)
-            replay_buffer = ReplayBuffer.create_from_group(
-                group=zarr.group(store)
-            )
+        replay_buffer = load_replay_buffer(dataset_path, out_res, cache_dir)
         
         self.num_robot = 0
         rgb_keys = list()
@@ -237,8 +233,7 @@ class UmiDataset(BaseDataset):
         key_down_sample_steps['action'] = shape_meta['action']['down_sample_steps']
 
         if val_dataset_path is not None:
-            self.val_replay_buffer = open_replay_buffer(
-                val_dataset_path, zarr.MemoryStore(), out_res)
+            self.val_replay_buffer = load_replay_buffer(val_dataset_path, out_res, cache_dir)
             val_mask = np.zeros(replay_buffer.n_episodes, dtype=bool)
         else:
             self.val_replay_buffer = None

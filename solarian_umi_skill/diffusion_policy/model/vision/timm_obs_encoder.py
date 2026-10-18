@@ -111,12 +111,13 @@ def pool_box_tokens(
     grid_size: tuple,
     num_prefix_tokens: int,
 ) -> torch.Tensor:
-    """CLS token, the mean of the patch tokens under the box, and the box.
+    """CLS token, the mean of the patch tokens under the target, and its box.
 
     Args:
         tokens: ``(N, num_prefix_tokens + gh * gw, D)`` final ViT tokens.
-        mask: ``(N, 1, H, W)`` box mask after the geometric transforms, so it
-            is aligned with the pixels the ViT saw. Resizing makes it soft.
+        mask: ``(N, 1, H, W)`` target mask after the geometric transforms, so
+            it is aligned with the pixels the ViT saw: a rasterized box, or a
+            segmentation whose shape weights the mean. Resizing makes it soft.
         grid_size: ``(gh, gw)`` patch grid.
         num_prefix_tokens: leading non-patch tokens; index 0 is CLS.
 
