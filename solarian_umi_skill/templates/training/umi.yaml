@@ -14,7 +14,7 @@
 # Point the matching skill yaml (a copy of conf/skills/umi.yaml) at that file:
 #
 #   conf/skills/cup_arrange.yaml
-#     policy_server.checkpoint: models/cup_arrange/checkpoints/latest.ckpt
+#     server.checkpoint: models/cup_arrange/checkpoints/latest.ckpt
 #
 #   UMISkill(params={"config": "cup_arrange.yaml"})
 

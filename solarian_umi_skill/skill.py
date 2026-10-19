@@ -3,7 +3,7 @@ UMISkill — runs a UMI diffusion policy described by a project yaml.
 
 The diffusion model is hosted by a ``DiffusionPolicyServer`` (from the
 ``solarian-policy-diffusion`` plugin) and reached over HTTP through a
-:class:`~solarian.core.ai.system1.PolicyClient`.
+:class:`~solarian.services.policy.PolicyClient`.
 
 Arm and gripper motion match UMI's RTDE path: the skill schedules sparse
 timestamped waypoints onto each module (``SCHEDULE_L`` / ``SCHEDULE_J``). The arm
@@ -26,7 +26,6 @@ import logging
 import os
 import pathlib
 import subprocess
-import sys
 import time
 
 import numpy as np
@@ -35,10 +34,11 @@ import yaml
 from solarian.core.action import Action, ActionType
 from solarian.core.execution import ExecutionPlace
 from solarian.core.ai.system1.skill import Skill
-from solarian.core.ai.system1.policy_client import PolicyClient
 from solarian.core.clock_sync import LatencyEma, synced_time
 from solarian.core.conf_paths import conf_dir, module_config_path, skill_config_path
 from solarian.core.module_yaml import read_module_field
+from solarian.services import PolicyClient
+from solarian.services.launch import server_spec
 from solarian.utils.status_board import StatusBoard
 
 from solarian_umi_skill.umi.common.interpolation_util import (
@@ -76,7 +76,7 @@ def reachable(timestamps: np.ndarray, latency: float, now: float) -> np.ndarray:
 class UMISkill(Skill):
     """A UMI diffusion policy, configured by the yaml in ``params["config"]``."""
 
-    policy_server_module = "solarian_policy_diffusion.policy_server"
+    policy_service = "diffusion-policy"
     config_name = "umi"
     execution_place = ExecutionPlace.ROBOT
     skill_id = 1
@@ -153,6 +153,7 @@ class UMISkill(Skill):
 
         self.policy_client = PolicyClient(
             server_url=policy_server_url,
+            token=cfg.get("policy_server_token"),
             connect_retries=int(cfg.get("connect_retries", 0)),
             retry_interval=float(cfg.get("retry_interval", 1.0)),
         )
@@ -394,43 +395,19 @@ class UMISkill(Skill):
     # ------------------------------------------------------------------
 
     def _maybe_start_managed_server(self, cfg: dict) -> str:
-        """Optionally launch a co-located policy server, returning its URL."""
-        server_cfg = cfg.get("policy_server", {}) or {}
+        """Launch the conf's ``server:`` as a child process when it is managed.
 
-        checkpoint = server_cfg.get("checkpoint")
-        if not checkpoint:
-            raise ValueError(
-                "policy_server.checkpoint must be defined — the skill always "
-                "declares where its policy checkpoint is."
-            )
-
-        host = server_cfg.get("host", "127.0.0.1")
-        port = int(server_cfg.get("port", 8001))
-
-        if not server_cfg.get("managed", False):
-            return cfg.get("policy_server_url", f"http://{host}:{port}")
-
-        module = type(self).policy_server_module
-        if not module:
-            raise ValueError(
-                f"{type(self).__name__} has no policy_server_module set; "
-                f"cannot launch a managed policy server."
-            )
-
-        cmd = [
-            sys.executable,
-            "-m",
-            module,
-            "--input",
-            str(checkpoint),
-            "--host",
-            str(host),
-            "--port",
-            str(port),
-        ]
+        Returns the URL to reach the policy at: the managed server's, or the
+        conf's ``policy_server_url`` for one running elsewhere.
+        """
+        block = cfg.get("server") or {}
+        if not block.get("managed", False):
+            return cfg["policy_server_url"]
+        spec = server_spec(block, default_service=type(self).policy_service, source=str(self.params["config"]))
+        cmd = spec.command()
         logger.info("Launching managed policy server: %s", " ".join(cmd))
         self._managed_server_proc = subprocess.Popen(cmd)
-        return f"http://{host}:{port}"
+        return f"http://{spec.host}:{spec.port}"
 
     # ------------------------------------------------------------------
     # Observation handling

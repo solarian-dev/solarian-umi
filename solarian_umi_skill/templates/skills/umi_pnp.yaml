@@ -5,7 +5,7 @@
 # (`target: mask`).
 #   UMIPnPSkill(params={"config": "umi_pnp.yaml"})
 # Serve its checkpoint with:
-#   solarian run-policy umi --config umi_pnp.yaml
+#   solarian run-service umi_pnp
 # Any key here can be overridden by the same key in the skill's params.
 
 # ---- Placement -------------------------------------------------------
@@ -22,11 +22,15 @@ target_field: bbox
 
 # ---- Policy server ---------------------------------------------------
 policy_server_url: ${deployment.pnp_policy_server_url}
+# The endpoint's bearer token; null for a server that asks for none.
+policy_server_token: ${oc.select:deployment.solarian_base_endpoint_token,null}
 
-policy_server:
+# What `solarian run-service <this conf>` and Solarian Base serve.
+server:
+  service: umi-policy
   managed: false
   # The trained point-and-pick checkpoint, as a path on the inference host.
-  checkpoint: ${deployment.pnp_policy_checkpoint}
+  checkpoint: ${oc.select:deployment.pnp_policy_checkpoint,null}
   host: 127.0.0.1
   port: 8002
 

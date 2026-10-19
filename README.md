@@ -32,13 +32,16 @@ self.start_skill(UMISkill(params={"config": "cup_arrange.yaml"}))
 
 The skill runs on the robot by default; set `execution_place: server` in the file to run it on the relay. On the robot, the controller sends `START_SKILL` with name `umi` and those params. One `UMISkill` runs at a time; a different file restarts it.
 
-Serve the checkpoint named in the file:
+Serve the checkpoint named in the file's `server:` block (the
+`diffusion-policy` service, from `solarian-policy-diffusion`):
 
 ```bash
-solarian run-policy umi --config cup_arrange.yaml
+solarian run-service cup_arrange
 ```
 
-With no `--config`, `run-policy` reads `conf/skills/umi.yaml`.
+The skill reaches it at `policy_server_url`, sending `policy_server_token` when
+the server asks for one (a policy hosted on Solarian Base). With
+`server.managed: true` the skill launches the server itself.
 
 ## Point and pick
 
@@ -78,10 +81,10 @@ Copy one per run and change `job_name`, `task.dataset_mix` and whatever else the
 
 ```text
 conf/training/cup_arrange.yaml    job_name: cup_arrange    task.dataset_mix: [{path: datasets/cup.zarr.zip, weight: 1.0}]
-conf/skills/cup_arrange.yaml      policy_server.checkpoint: models/cup_arrange/checkpoints/latest.ckpt
+conf/skills/cup_arrange.yaml      server.checkpoint: models/cup_arrange/checkpoints/latest.ckpt
 
 conf/training/pick_object.yaml    job_name: pick_object
-conf/skills/pick_object.yaml      policy_server.checkpoint: models/pick_object/checkpoints/latest.ckpt
+conf/skills/pick_object.yaml      server.checkpoint: models/pick_object/checkpoints/latest.ckpt
 ```
 
 Training uses the UMI code copied into this package (MIT, copyright 2023 Columbia Artificial Intelligence and Robotics Lab, [universal_manipulation_interface](https://github.com/real-stanford/universal_manipulation_interface)). Install the training libraries with `pip install "solarian-umi-skill[train]"`. `solarian modal-train` uploads every dataset and checkpoint the file names.
@@ -90,7 +93,7 @@ Training uses the UMI code copied into this package (MIT, copyright 2023 Columbi
 solarian train --conf conf/training/cup_arrange
 ```
 
-Checkpoints are written to `models/<job_name>/checkpoints/latest.ckpt`. Set that path as `policy_server.checkpoint` in the skill yaml, then start the same skill:
+Checkpoints are written to `models/<job_name>/checkpoints/latest.ckpt`. Set that path as `server.checkpoint` in the skill yaml, then start the same skill:
 
 ```python
 self.start_skill(UMISkill(params={"config": "cup_arrange.yaml"}))

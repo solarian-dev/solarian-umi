@@ -6,18 +6,22 @@
 # start the skill with that filename:
 #   UMISkill(params={"config": "cup_arrange.yaml"})
 # Serve its checkpoint with:
-#   solarian run-policy umi --config cup_arrange.yaml
+#   solarian run-service cup_arrange
 # Any key here can be overridden by the same key in the skill's params.
 
 # ---- Policy server ---------------------------------------------------
 policy_server_url: ${deployment.policy_server_url}
+# The endpoint's bearer token; null for a server that asks for none.
+policy_server_token: ${oc.select:deployment.solarian_base_endpoint_token,null}
 
-policy_server:
+# What `solarian run-service <this conf>` and Solarian Base serve.
+server:
+  service: umi-policy
   managed: false
   # The trained UMI checkpoint, as a path on the inference host.
   # A task trained with conf/train-<task>.yaml writes
   # models/<job_name>/checkpoints/latest.ckpt. Point this at that file.
-  checkpoint: ${deployment.policy_checkpoint}
+  checkpoint: ${oc.select:deployment.policy_checkpoint,null}
   host: 127.0.0.1
   port: 8001
 
