@@ -131,7 +131,12 @@ solarian umi-slam datasets/cup_session --format zarr
 # Lumi: once per camera and lens, with the collector on its Stream video screen.
 solarian umi-calibrate-lumi --serial LUMI07FC9785   # writes conf/calibrations/cameras/LUMI07FC9785.json
 solarian umi-slam datasets/lumi_session --camera lumi
+# or the collector's packed dataset (solarian lumi pack); --camera lumi is implied
+solarian umi-slam datasets/cups.lumi.zip
+# writes datasets/cups.solarian.zip
 ```
+
+A `.lumi.zip` is extracted into a temporary work directory (or `--work-dir DIR`), which is removed after a successful run and kept after a failed one. `--yes` downloads missing Docker images without asking, for unattended runs such as Solarian Base's **Generate Solarian Dataset**.
 
 `--format solarian` (the default) writes a solarian session, the layout `solarian record` uses, packed into one `.solarian.zip` with its entries at the archive root, as in a `.zarr.zip`. Solarian Base accepts it as an upload, and unzipped it is a session directory `export-dataset` reads. Training reads the zip directly; the mp4s are stored without zip compression, so they decode straight out of the archive:
 

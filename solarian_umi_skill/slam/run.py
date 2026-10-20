@@ -70,6 +70,7 @@ def run_session(
     slam_settings: Path | None = None,
     dataset_format: str = "solarian",
     gripper_tag_threshold: float | None = None,
+    assume_yes: bool = False,
 ) -> None:
     if not session.is_dir():
         raise FileNotFoundError(
@@ -81,11 +82,12 @@ def run_session(
         raise FileNotFoundError(f"Calibration directory not found: {calibration}.")
     # IMU extraction runs before mapping, so ask for that image first.
     # Lumi IMU data comes from the collector's sidecars instead.
-    if camera == "gopro":
-        ensure_image(OPENICC_IMAGE)
-        ensure_image(ORB_SLAM3_IMAGE)
-    else:
-        ensure_image(LUMI_ORB_SLAM3_IMAGE)
+    images = [OPENICC_IMAGE, ORB_SLAM3_IMAGE] if camera == "gopro" else [LUMI_ORB_SLAM3_IMAGE]
+    for image in images:
+        if assume_yes:
+            ensure_image(image, input_fn=lambda _prompt: "y")
+        else:
+            ensure_image(image)
     slam_cmd, dataset_cmd = pipeline_argv(
         session, output, calibration, camera=camera, slam_settings=slam_settings,
         dataset_format=dataset_format, gripper_tag_threshold=gripper_tag_threshold,

@@ -1,10 +1,12 @@
 """umi-slam wiring and the Docker image prompt. No SLAM and no Docker."""
 
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
 
+from solarian_umi_skill.commands.slam import UmiSlamCommand, extract_lumi
 from solarian_umi_skill.slam.docker import (
     LUMI_ORB_SLAM3_IMAGE,
     OPENICC_IMAGE,
@@ -124,6 +126,69 @@ def test_each_camera_asks_only_for_its_images(tmp_path, monkeypatch, camera, ima
     with pytest.raises(SystemExit):
         run_session(session, session / "dataset.zarr.zip", tmp_path, camera=camera)
     assert asked == images
+
+
+def _lumi_zip(path: Path, wrap: str = "") -> Path:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(f"{wrap}catalog.json", "{}")
+        zf.writestr(f"{wrap}raw_videos/GX010001.MP4", b"mp4")
+        zf.writestr(f"{wrap}raw_videos/GX010001.imu.json", "{}")
+    return path
+
+
+def _run_command(monkeypatch, argv):
+    calls = []
+
+    def fake_run_session(session, output, calibration, **kwargs):
+        calls.append({"session": session, "output": output, **kwargs,
+                      "files": sorted(p.relative_to(session).as_posix()
+                                      for p in session.rglob("*") if p.is_file())})
+
+    monkeypatch.setattr("solarian_umi_skill.commands.slam.run_session", fake_run_session)
+    cmd = UmiSlamCommand()
+    cmd.parse_args(argv)
+    cmd.handle(None)
+    return calls[0]
+
+
+@pytest.mark.parametrize("wrap", ["", "cups/"])
+def test_a_lumi_zip_is_extracted_and_defaults_to_lumi(tmp_path, monkeypatch, wrap):
+    archive = _lumi_zip(tmp_path / "cups.lumi.zip", wrap)
+    work = tmp_path / "work"
+
+    call = _run_command(monkeypatch, [str(archive), "--work-dir", str(work), "--yes"])
+
+    assert call["camera"] == "lumi"
+    assert call["assume_yes"] is True
+    assert call["output"] == tmp_path / "cups.solarian.zip"
+    assert call["session"] == work / wrap.rstrip("/")
+    assert call["files"] == ["catalog.json", "raw_videos/GX010001.MP4", "raw_videos/GX010001.imu.json"]
+    assert work.is_dir()
+
+
+def test_a_temporary_work_dir_is_removed_after_success(tmp_path, monkeypatch):
+    archive = _lumi_zip(tmp_path / "cups.lumi.zip")
+
+    call = _run_command(monkeypatch, [str(archive), "--format", "zarr"])
+
+    assert call["output"] == tmp_path / "cups.zarr.zip"
+    assert not call["session"].exists()
+
+
+def test_a_directory_keeps_gopro_and_its_own_output(tmp_path, monkeypatch):
+    call = _run_command(monkeypatch, [str(tmp_path)])
+
+    assert call["session"] == tmp_path
+    assert call["camera"] == "gopro"
+    assert call["output"] == tmp_path / "dataset.solarian.zip"
+
+
+def test_a_zip_without_catalog_is_refused(tmp_path):
+    archive = tmp_path / "x.lumi.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("session.json", "{}")
+    with pytest.raises(SystemExit, match="not a lumi dataset"):
+        extract_lumi(archive, tmp_path / "work")
 
 
 def test_missing_image_is_pulled_only_after_yes(monkeypatch):
