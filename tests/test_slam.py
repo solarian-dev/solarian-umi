@@ -87,6 +87,18 @@ def test_the_gripper_tag_threshold_is_forwarded(tmp_path):
     assert slam[-2:] == ["--gripper-tag-threshold", "0.7"]
 
 
+def test_the_rolling_shutter_is_undone_only_when_asked(tmp_path):
+    plain, _dataset = pipeline_argv(tmp_path, tmp_path / "out.zip", tmp_path, camera="lumi")
+    undone, _dataset = pipeline_argv(tmp_path, tmp_path / "out.zip", tmp_path, camera="lumi", rolling_shutter=True)
+    assert "--rolling-shutter" not in plain
+    assert undone[-1] == "--rolling-shutter"
+
+
+def test_the_map_library_is_forwarded(tmp_path):
+    slam, _dataset = pipeline_argv(tmp_path, tmp_path / "out.zip", tmp_path, map_library=tmp_path / "maps")
+    assert slam[-2:] == ["--map-library", str(tmp_path / "maps")]
+
+
 def test_a_failed_slam_stage_does_not_write_the_zarr(tmp_path, monkeypatch):
     session = tmp_path / "session"
     session.mkdir()

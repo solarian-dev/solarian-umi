@@ -186,21 +186,16 @@ class UmiTrainer(PolicyTrainer):
             local_python_packages=["solarian", "solarian_umi_skill"],
         )
 
-    def train(self) -> None:
-        from solarian_umi_skill import training
-
+    def check_inputs(self, skip: Callable[[str], bool] = lambda path: False) -> None:
         cfg: UmiTrainConfig = self.cfg
-        output_dir = self.output_dir or cfg.output_dir
-        if not output_dir:
-            raise ValueError(
-                "output_dir is not set. solarian train sets it to models/<job_name>."
-            )
         task, init_from_ckpt = cfg.task, cfg.training.init_from_ckpt
         val_dataset = task.dataset.val_dataset_path
-        datasets = [entry.path for entry in task.dataset_mix]
-        # Checked before the training set loads. The workspace only warns on a
-        # missing init checkpoint and then trains from the pretrained backbone.
-        if init_from_ckpt and not os.path.isfile(os.path.expanduser(init_from_ckpt)):
+        datasets = [path for path in (entry.path for entry in task.dataset_mix) if not skip(path)]
+        if val_dataset and skip(val_dataset):
+            val_dataset = None
+        # The workspace only warns on a missing init checkpoint and then trains
+        # from the pretrained backbone.
+        if init_from_ckpt and not skip(init_from_ckpt) and not os.path.isfile(os.path.expanduser(init_from_ckpt)):
             raise FileNotFoundError(f"training.init_from_ckpt not found: {init_from_ckpt}")
         if val_dataset and not is_dataset(val_dataset):
             raise FileNotFoundError(f"task.dataset.val_dataset_path not found: {val_dataset}")
@@ -222,6 +217,16 @@ class UmiTrainer(PolicyTrainer):
                         f"{cfg.job_name} observes a mask, which needs a data/mask array "
                         f"in {path}; add it with solarian_base scripts/zarr_add_masks.py"
                     )
+
+    def train(self) -> None:
+        from solarian_umi_skill import training
+
+        cfg: UmiTrainConfig = self.cfg
+        output_dir = self.output_dir or cfg.output_dir
+        if not output_dir:
+            raise ValueError(
+                "output_dir is not set. solarian train sets it to models/<job_name>."
+            )
         # Without latest.ckpt the workspace would neither resume nor apply
         # init_from_ckpt, and silently start from the pretrained backbone.
         latest = os.path.join(output_dir, "checkpoints", "latest.ckpt")

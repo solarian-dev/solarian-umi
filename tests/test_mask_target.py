@@ -204,14 +204,10 @@ def test_has_mask_reads_the_zip_index(tmp_path):
     assert not has_mask(_write_zarr(tmp_path / "without.zarr.zip", with_mask=False))
 
 
-def test_mask_training_refuses_a_dataset_without_masks(tmp_path, monkeypatch):
-    def fail(*_a, **_k):
-        raise AssertionError("training should not start")
-
-    monkeypatch.setattr("solarian_umi_skill.training.run_training", fail)
+def test_mask_training_refuses_a_dataset_without_masks(tmp_path):
     with_mask = _write_zarr(tmp_path / "with.zarr.zip")
     without = _write_zarr(tmp_path / "without.zarr.zip", with_mask=False)
     cfg = _cfg("umi_pick_mask", f"task.dataset_mix=[{{path:'{with_mask}',weight:1.0}}]",
                f"task.dataset.val_dataset_path='{without}'")
     with pytest.raises(ValueError, match="zarr_add_masks"):
-        UmiTrainer(cfg, output_dir=str(tmp_path)).train()
+        UmiTrainer(cfg, output_dir=str(tmp_path)).check_inputs()

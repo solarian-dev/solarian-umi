@@ -1,8 +1,9 @@
 """Lumi session preparation between step 00 and the GoPro SLAM steps.
 
-Remap the videos into GoPro geometry, build imu_data.json from the sidecars,
-measure each demo's camera-to-IMU time offset and one camera-to-IMU rotation,
-and write the ORB-SLAM3 yaml. After this, steps 02 to 07 treat the session
+Measure on the recordings each demo's camera-to-IMU time offset, one
+camera-to-IMU rotation and the sensor's rolling-shutter readout; remap the
+videos into GoPro geometry, optionally with the readout undone; build
+imu_data.json from the sidecars, and write the ORB-SLAM3 yaml. After this, steps 02 to 07 treat the session
 as GoPro footage with a 30 fps camera and a 200 Hz IMU.
 """
 
@@ -28,6 +29,7 @@ from solarian_umi_skill.slam.lumi_imu import (
     write_imu_json,
 )
 from solarian_umi_skill.slam.remap_video import gopro_target, native_path, remap_session
+from solarian_umi_skill.slam.rolling_shutter import estimate_rolling_shutter, frame_camera_rates
 from solarian_umi_skill.slam.support.cam_imu import (
     CameraRotation,
     OffsetEstimate,
@@ -57,17 +59,24 @@ class DemoTiming:
     # Sidecar frame times put frames on the IMU clock, so every take shares one
     # offset however long the IMU runs on after the last frame.
     framed: bool
+    frame_video_s: np.ndarray  # (K,) video time of each recorded frame
     offset_s: float = 0.0
     source: str = ""
 
 
 def _measure(demo: Path, sidecar: Path, model: Fisheye) -> DemoTiming:
-    n, fps = video_frame_count(demo / "raw_video.mp4")
+    native = native_path(demo)
+    n, fps = video_frame_count(native)
     track = read_sidecar(sidecar, fps)
     frame_t = sidecar_frame_times(sidecar)
-    cam = camera_angular_velocity(
-        native_path(demo), model, None if frame_t is None else frame_slots(frame_t, fps) / fps
-    )
+    if frame_t is None:
+        frame_video_s = np.arange(n) / fps
+    else:
+        slots = frame_slots(frame_t, fps)
+        frame_video_s = slots / fps
+        # The remap fills every slot the collector dropped.
+        n = int(slots[-1]) + 1
+    cam = camera_angular_velocity(native, model, None if frame_t is None else frame_video_s)
     return DemoTiming(
         demo=demo,
         track=track,
@@ -75,6 +84,7 @@ def _measure(demo: Path, sidecar: Path, model: Fisheye) -> DemoTiming:
         span_excess_s=float(track.t_s[-1] - (n - 1) / fps),
         found=estimate_offset(cam, track.t_s, track.gyr),
         framed=frame_t is not None,
+        frame_video_s=frame_video_s,
     )
 
 
@@ -98,7 +108,10 @@ def _settle_offsets(timings: list[DemoTiming]) -> float:
     return end_lag
 
 
-def prepare_lumi_session(session: Path, gopro_intrinsics: Path, conf_dirs: list[Path]) -> Path:
+def prepare_lumi_session(
+    session: Path, gopro_intrinsics: Path, conf_dirs: list[Path], *, undo_rolling_shutter: bool = False
+) -> Path:
+    """Returns the ORB-SLAM3 yaml. The rolling shutter is measured either way."""
     demos = session / "demos"
     serial = camera_serial(native_path(demos / "mapping"))
     calibration = find_calibration(session, serial, conf_dirs)
@@ -107,7 +120,6 @@ def prepare_lumi_session(session: Path, gopro_intrinsics: Path, conf_dirs: list[
     missing = sorted(p.name for p in demos.iterdir() if p.is_dir() and p.resolve() not in pairs)
     if missing:
         raise SystemExit(f"No .imu.json sidecar for: {', '.join(missing)}")
-    remap_session(session, calibration, gopro_intrinsics, pairs)
 
     native = load_native_model(calibration)
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -133,14 +145,30 @@ def prepare_lumi_session(session: Path, gopro_intrinsics: Path, conf_dirs: list[
         [paired_rates(t.cam, t.track.t_s, t.track.gyr, t.offset_s) for t in used]
     )
     tilt = rotation_angle_deg(r_b_c, MOUNT_PRIOR_R_B_C)
+    shutter = estimate_rolling_shutter([(t.cam, t.track.t_s, t.track.gyr, t.offset_s) for t in used])
     counts = {s: sum(t.source == s for t in timings) for s in ("gyro", "gyro near prior", "end of video")}
     print(
         f"IMU timing: video ends {end_lag * 1000:.0f} ms before the IMU stops "
         f"(offsets from gyro {counts['gyro']}, gyro near that {counts['gyro near prior']}, "
         f"from the video end {counts['end of video']}). "
         f"Camera-to-IMU rotation is {tilt:.1f} deg from the designed mount, "
-        f"residual {residual:.3f} rad/s over {len(used)} demos."
+        f"residual {residual:.3f} rad/s over {len(used)} demos. "
+        + (
+            "Too few demos time the rows apart to measure the rolling shutter."
+            if shutter is None
+            else f"Rows read over {shutter.readout_s * 1000:.1f} ms; offsets refer to the row "
+            f"{shutter.ref_row:.0%} down the frame."
+        )
     )
+
+    undo = shutter if undo_rolling_shutter else None
+    frame_rates = {}
+    if undo is not None:
+        frame_rates = {
+            t.demo: frame_camera_rates(undo, t.frame_video_s, t.track.t_s + t.offset_s, t.track.gyr, r_b_c)
+            for t in timings
+        }
+    remap_session(session, calibration, gopro_intrinsics, pairs, undo, frame_rates)
 
     for t in timings:
         write_imu_json(t.demo, t.track.shifted(t.offset_s), serial)
@@ -161,6 +189,11 @@ def prepare_lumi_session(session: Path, gopro_intrinsics: Path, conf_dirs: list[
                 "degrees_from_designed_mount": tilt,
                 "rotation_residual_rad_s": residual,
                 "end_lag_s": end_lag,
+                "rolling_shutter": None if shutter is None else {
+                    "readout_s": shutter.readout_s,
+                    "ref_row": shutter.ref_row,
+                    "undone": undo is not None,
+                },
                 "demos": {
                     t.demo.name: {
                         "offset_s": t.offset_s,

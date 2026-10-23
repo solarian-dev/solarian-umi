@@ -14,6 +14,7 @@ import os
 
 
 # %%
+import json
 import pathlib
 import click
 import subprocess
@@ -21,6 +22,7 @@ import subprocess
 from solarian_umi_skill.slam.docker import LUMI_ORB_SLAM3_IMAGE
 from solarian_umi_skill.slam.lumi_camera import FINGER_TAG_Z_M
 from solarian_umi_skill.slam.lumi_prepare import EXCLUDED_DEMOS_DIR, prepare_lumi_session
+from solarian_umi_skill.slam.map_selection import MAP_SETTINGS, SELECTION_NAME, mapping_key, select_map
 from solarian_umi_skill.slam.remap_video import COVERAGE_NAME
 from solarian_umi_skill.slam.trajectory_check import demo_trajectories, exclude_failed, format_report, gate
 
@@ -31,7 +33,19 @@ from solarian_umi_skill.slam.trajectory_check import demo_trajectories, exclude_
 @click.option('--camera', type=click.Choice(['gopro', 'lumi']), default='gopro')
 @click.option('--slam-settings', 'slam_settings', type=str, default=None)
 @click.option('--gripper-tag-threshold', 'gripper_tag_threshold', type=float, default=None)
-def main(session_dir, calibration_dir, camera, slam_settings, gripper_tag_threshold):
+@click.option('--map-candidates', 'map_candidates', type=int, default=6,
+              help='Maps built from the mapping video; the one most probe demos track on is kept.')
+@click.option('--map-library', 'map_library', type=str, default=None,
+              help='Directory keeping the best map of each mapping take, with the settings it was built '
+                   'with; a later run on the same take scores that map against its new ones.')
+@click.option('--probe-demos', 'probe_demos', type=int, default=24,
+              help='Demos, spread over the session, each map candidate is scored on.')
+@click.option('--retries', type=int, default=2,
+              help='Passes that track again, on the same map, the demos still without a passing trajectory.')
+@click.option('--rolling-shutter', 'rolling_shutter', is_flag=True,
+              help='Lumi: undo the measured rolling shutter in the remap.')
+def main(session_dir, calibration_dir, camera, slam_settings, gripper_tag_threshold, map_candidates, map_library,
+         probe_demos, retries, rolling_shutter):
     script_dir = pathlib.Path(__file__).parent.joinpath('scripts')
     if calibration_dir is None:
         calibration_dir = pathlib.Path(__file__).parent.joinpath('calibration')
@@ -69,7 +83,8 @@ def main(session_dir, calibration_dir, camera, slam_settings, gripper_tag_thresh
             print("############# 01_prepare_lumi ###########")
             # Camera files live in the project the command runs from.
             lumi_settings = prepare_lumi_session(
-                session, camera_intrinsics, [pathlib.Path.cwd().joinpath('conf')])
+                session, camera_intrinsics, [pathlib.Path.cwd().joinpath('conf')],
+                undo_rolling_shutter=rolling_shutter)
             slam_settings_path = slam_settings_path or lumi_settings
             coverage_mask = session.joinpath(COVERAGE_NAME)
         else:
@@ -85,28 +100,25 @@ def main(session_dir, calibration_dir, camera, slam_settings, gripper_tag_thresh
                 raise SystemExit(result.returncode)
 
         slam_options = []
-        if slam_settings_path is not None:
-            slam_options.extend(['--slam_settings', str(slam_settings_path)])
         if coverage_mask is not None:
             slam_options.extend(['--coverage_mask', str(coverage_mask)])
         if camera == 'lumi':
             slam_options.extend(['--docker_image', LUMI_ORB_SLAM3_IMAGE])
 
         print("############# 02_create_map ###########")
-        script_path = script_dir.joinpath("02_create_map.py")
-        assert script_path.is_file()
         map_path = mapping_dir.joinpath('map_atlas.osa')
         if not map_path.is_file():
-            cmd = [
-                sys.executable, str(script_path),
-                '--input_dir', str(mapping_dir),
-                '--map_path', str(map_path),
-                *slam_options,
-            ]
-            result = subprocess.run(cmd)
-            if result.returncode != 0:
-                raise SystemExit(result.returncode)
+            library_entry = None
+            if map_library is not None:
+                library_entry = pathlib.Path(os.path.expanduser(map_library)).absolute().joinpath(
+                    mapping_key(session))
+            selection = select_map(mapping_dir, demo_dir, script_dir, slam_options, slam_settings_path,
+                                   candidates=map_candidates, probes=probe_demos, library_entry=library_entry)
+            session.joinpath(SELECTION_NAME).write_text(json.dumps(selection, indent=2) + '\n', encoding='utf-8')
             assert map_path.is_file()
+        map_settings = mapping_dir.joinpath(MAP_SETTINGS)
+        if map_settings.is_file():
+            slam_settings_path = map_settings
 
         print("############# 03_batch_slam ###########")
         script_path = script_dir.joinpath("03_batch_slam.py")
@@ -117,9 +129,25 @@ def main(session_dir, calibration_dir, camera, slam_settings, gripper_tag_thresh
             '--map_path', str(map_path),
             *slam_options,
         ]
+        if slam_settings_path is not None:
+            cmd.extend(['--slam_settings', str(slam_settings_path)])
         result = subprocess.run(cmd)
         if result.returncode != 0:
             raise SystemExit(result.returncode)
+
+        # Tracking on a map is not repeatable: a demo that diverges on one run often passes on the next.
+        for attempt in range(1, retries + 1):
+            tracked = {t.name for t in demo_trajectories(demo_dir) if t.ok}
+            retry = [d for d in demo_dir.glob('demo_*') if d.name not in tracked]
+            if not retry:
+                break
+            print(f"Retry {attempt} of {retries}: tracking {len(retry)} demo(s) again that have no trajectory "
+                  f"or fail the limits.")
+            for demo in retry:
+                demo.joinpath('camera_trajectory.csv').unlink(missing_ok=True)
+            result = subprocess.run(cmd)
+            if result.returncode != 0:
+                raise SystemExit(result.returncode)
 
         print("############# 03b_check_trajectories ###########")
         trajectories = demo_trajectories(demo_dir)

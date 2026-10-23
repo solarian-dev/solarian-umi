@@ -63,7 +63,7 @@ class UmiSlamCommand(BaseCommand):
     """
     usage = ("<session> [--output PATH] [--format solarian|zarr] [--calibration-dir DIR] "
              "[--camera gopro|lumi] [--slam-settings PATH] [--gripper-tag-threshold F] "
-             "[--work-dir DIR] [--yes]")
+             "[--rolling-shutter] [--map-library DIR] [--work-dir DIR] [--yes]")
     options = {
         "session": "Directory of GoPro or Lumi collector MP4s, or a Lumi <name>.lumi.zip.",
         "--output PATH": "Dataset path. Defaults to <session>/dataset.solarian.zip (dataset.zarr.zip "
@@ -82,6 +82,11 @@ class UmiSlamCommand(BaseCommand):
                                 "Defaults to the GoPro Max Lens yaml, or the Lumi yaml.",
         "--gripper-tag-threshold F": "Fraction of gripper calibration frames in which each finger "
                                      "tag must be detected. Defaults to 0.8.",
+        "--rolling-shutter": "Lumi: undo the sensor's rolling shutter in the remap, with the gyro's "
+                             "rotation while the rows were read. The readout is measured either way.",
+        "--map-library DIR": "Keeps the best map of each mapping take here, with the settings it was "
+                             "built with. A later run on the same take, such as a merged dataset that "
+                             "shares it, scores that map against its new ones and keeps the better.",
         "--work-dir DIR": "Where a .lumi.zip is extracted and processed. Kept afterwards. "
                           "Defaults to a temporary directory.",
         "--yes": "Download missing Docker images without asking, for unattended runs.",
@@ -102,6 +107,8 @@ class UmiSlamCommand(BaseCommand):
         parser.add_argument("--camera", choices=("gopro", "lumi"), default=None)
         parser.add_argument("--slam-settings", default=None)
         parser.add_argument("--gripper-tag-threshold", type=float, default=None)
+        parser.add_argument("--rolling-shutter", action="store_true")
+        parser.add_argument("--map-library", default=None)
         parser.add_argument("--work-dir", default=None)
         parser.add_argument("--yes", "-y", action="store_true")
         ns = parser.parse_args(argv)
@@ -112,6 +119,8 @@ class UmiSlamCommand(BaseCommand):
         self.camera = ns.camera
         self.slam_settings = ns.slam_settings
         self.gripper_tag_threshold = ns.gripper_tag_threshold
+        self.rolling_shutter = ns.rolling_shutter
+        self.map_library = ns.map_library
         self.work_dir = ns.work_dir
         self.yes = ns.yes
         return []
@@ -150,6 +159,8 @@ class UmiSlamCommand(BaseCommand):
             slam_settings=slam_settings,
             dataset_format=self.format,
             gripper_tag_threshold=self.gripper_tag_threshold,
+            rolling_shutter=self.rolling_shutter,
+            map_library=Path(self.map_library).expanduser() if self.map_library else None,
             assume_yes=self.yes,
         )
         if lumi_zip and not self.work_dir:

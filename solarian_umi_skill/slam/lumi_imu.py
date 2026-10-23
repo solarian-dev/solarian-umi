@@ -46,9 +46,10 @@ class ImuTrack:
 
 
 def video_frame_count(video: Path) -> tuple[int, float]:
+    """Frames and the nominal rate; a recording that dropped frames averages below it."""
     with av.open(str(video)) as container:
         stream = container.streams.video[0]
-        fps = float(stream.average_rate)
+        fps = float(stream.base_rate)
         n = stream.frames or sum(1 for packet in container.demux(stream) if packet.size)
     return int(n), fps
 

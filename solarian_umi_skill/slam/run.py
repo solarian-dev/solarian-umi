@@ -35,6 +35,8 @@ def pipeline_argv(
     slam_settings: Path | None = None,
     dataset_format: str = "solarian",
     gripper_tag_threshold: float | None = None,
+    rolling_shutter: bool = False,
+    map_library: Path | None = None,
 ) -> tuple[list[str], list[str]]:
     """The two commands: steps 00–06, then the dataset in ``dataset_format``."""
     slam = [
@@ -50,6 +52,10 @@ def pipeline_argv(
         slam.extend(["--slam-settings", str(slam_settings)])
     if gripper_tag_threshold is not None:
         slam.extend(["--gripper-tag-threshold", str(gripper_tag_threshold)])
+    if rolling_shutter:
+        slam.append("--rolling-shutter")
+    if map_library is not None:
+        slam.extend(["--map-library", str(map_library)])
     return (
         slam,
         [
@@ -70,6 +76,8 @@ def run_session(
     slam_settings: Path | None = None,
     dataset_format: str = "solarian",
     gripper_tag_threshold: float | None = None,
+    rolling_shutter: bool = False,
+    map_library: Path | None = None,
     assume_yes: bool = False,
 ) -> None:
     if not session.is_dir():
@@ -91,6 +99,7 @@ def run_session(
     slam_cmd, dataset_cmd = pipeline_argv(
         session, output, calibration, camera=camera, slam_settings=slam_settings,
         dataset_format=dataset_format, gripper_tag_threshold=gripper_tag_threshold,
+        rolling_shutter=rolling_shutter, map_library=map_library,
     )
     slam = subprocess.run(slam_cmd)
     if slam.returncode != 0:

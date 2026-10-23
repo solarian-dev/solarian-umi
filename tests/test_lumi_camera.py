@@ -53,7 +53,7 @@ def test_yaml_is_the_gopro_camera_with_the_lumi_imu(tmp_path):
     assert storage.getNode("Camera.fps").isInt()
     assert storage.getNode("Camera.fps").real() == 30
     assert storage.getNode("IMU.Frequency").isReal()
-    assert storage.getNode("IMU.NoiseGyro").real() == pytest.approx(0.0003)
+    assert storage.getNode("IMU.NoiseAcc").real() == pytest.approx(0.017)
     t_b_c = storage.getNode("IMU.T_b_c1").mat()
     storage.release()
     assert t_b_c[:3, :3] == pytest.approx(r_b_c, abs=1e-6)

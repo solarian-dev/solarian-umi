@@ -170,26 +170,36 @@ def _no_training(monkeypatch, started=None):
     ("training.init_from_ckpt={missing}", "training.init_from_ckpt"),
     ("task.dataset.val_dataset_path={missing}", "val_dataset_path"),
 ])
-def test_a_missing_input_file_does_not_start_training(tmp_path, monkeypatch, override, message):
-    _no_training(monkeypatch)
+def test_a_missing_input_file_does_not_start_training(tmp_path, override, message):
     dataset = tmp_path / "cup.zarr.zip"
     dataset.write_bytes(b"")
     _cls, _d, cfg = _load("umi", f"task.dataset_mix=[{{path:{dataset},weight:1.0}}]",
                           override.format(missing=tmp_path / "missing"))
 
     with pytest.raises(FileNotFoundError, match=message):
-        UmiTrainer(cfg, output_dir=str(tmp_path)).train()
+        UmiTrainer(cfg, output_dir=str(tmp_path)).check_inputs()
 
 
-def test_a_missing_dataset_does_not_start_training(tmp_path, monkeypatch):
-    _no_training(monkeypatch)
+def test_a_missing_dataset_does_not_start_training(tmp_path):
     side = tmp_path / "side.zarr.zip"
     side.write_bytes(b"")
     _cls, _d, cfg = _load(
         "umi", f"task.dataset_mix=[{{path:{side},weight:1.0}},{{path:{tmp_path / 'pile.zarr.zip'},weight:1.0}}]")
 
     with pytest.raises(FileNotFoundError, match="pile.zarr.zip"):
-        UmiTrainer(cfg, output_dir=str(tmp_path)).train()
+        UmiTrainer(cfg, output_dir=str(tmp_path)).check_inputs()
+
+
+def test_inputs_on_the_volume_are_left_to_the_run(tmp_path):
+    dataset = tmp_path / "cup.zarr.zip"
+    dataset.write_bytes(b"")
+    _cls, _d, cfg = _load("umi", f"task.dataset_mix=[{{path:{dataset},weight:1.0}},{{path:/data/files/pile.zarr.zip,weight:1.0}}]",
+                          "training.init_from_ckpt=/data/outputs/pick/checkpoints/latest.ckpt")
+    trainer = UmiTrainer(cfg)
+
+    trainer.check_inputs(skip=lambda path: path.startswith("/data/"))
+    with pytest.raises(FileNotFoundError, match="init_from_ckpt"):
+        trainer.check_inputs()
 
 
 def test_resume_needs_the_run_latest_checkpoint(tmp_path, monkeypatch):

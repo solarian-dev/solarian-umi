@@ -27,6 +27,8 @@ import json
 import multiprocessing
 import os
 import re
+import struct
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -96,6 +98,34 @@ def targets_member(episode: str, camera: str) -> str:
     return f"{episode}/{TARGETS_DIR}/{camera}.npz"
 
 
+class _Window(io.RawIOBase):
+    """``size`` bytes of ``raw`` from ``start``: seekable without reading what it skips."""
+
+    def __init__(self, raw, start: int, size: int):
+        self._raw, self._start, self._size, self._pos = raw, start, size, 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._pos
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self._pos, io.SEEK_END: self._size}[whence]
+        self._pos = min(max(base + offset, 0), self._size)
+        return self._pos
+
+    def readinto(self, buffer) -> int:
+        self._raw.seek(self._start + self._pos)
+        data = self._raw.read(min(len(buffer), self._size - self._pos))
+        buffer[:len(data)] = data
+        self._pos += len(data)
+        return len(data)
+
+
 class SessionArchive:
     """A ``.solarian.zip`` or a session directory, read by member path."""
 
@@ -103,6 +133,8 @@ class SessionArchive:
         self.path = Path(path).expanduser()
         self._zip = None if self.path.is_dir() else zipfile.ZipFile(self.path)
         self._names = set(self._zip.namelist()) if self._zip is not None else None
+        # Opened once: on a network volume each open costs a round trip.
+        self._raw = None
 
     def __enter__(self) -> "SessionArchive":
         return self
@@ -113,6 +145,8 @@ class SessionArchive:
     def close(self) -> None:
         if self._zip is not None:
             self._zip.close()
+        if self._raw is not None:
+            self._raw.close()
 
     def exists(self, member: str) -> bool:
         if self._zip is not None:
@@ -120,14 +154,37 @@ class SessionArchive:
         return (self.path / member).is_file()
 
     def open(self, member: str):
-        """A seekable binary file for ``member``."""
-        if self._zip is not None:
+        """A seekable binary file for ``member``.
+
+        A zip member's own ``seek`` reads what it skips, and the video decoder
+        seeks, so a stored member is read through a window on the archive file.
+        """
+        if self._zip is None:
+            return open(self.path / member, "rb")
+        info = self._zip.getinfo(member)
+        if info.compress_type != zipfile.ZIP_STORED:
             return self._zip.open(member)
-        return open(self.path / member, "rb")
+        if self._raw is None:
+            self._raw = open(self.path, "rb")
+        self._raw.seek(info.header_offset)
+        name_len, extra_len = struct.unpack("<HH", self._raw.read(30)[26:30])
+        window = _Window(self._raw, info.header_offset + 30 + name_len + extra_len, info.file_size)
+        return io.BufferedReader(window)
 
     def read_text(self, member: str) -> str:
         with self.open(member) as fh:
             return fh.read().decode("utf-8")
+
+    def npz_keys(self, member: str) -> set[str]:
+        """The arrays an ``.npz`` member holds, from its directory alone.
+
+        A targets file is mostly mask, and is read over a network volume.
+        """
+        if self._zip is not None and self._zip.getinfo(member).compress_type != zipfile.ZIP_STORED:
+            with self.open(member) as fh, np.load(io.BytesIO(fh.read())) as npz:
+                return set(npz.files)
+        with self.open(member) as fh, np.load(fh) as npz:
+            return set(npz.files)
 
     def episodes(self) -> list[str]:
         """Sealed ``ok`` episodes in index order, as member prefixes."""
@@ -254,9 +311,8 @@ def has_target(path: str | Path, key: str, camera: str = camera_name(0)) -> bool
             member = targets_member(episode, camera)
             if not archive.exists(member):
                 return False
-            with archive.open(member) as fh, np.load(io.BytesIO(fh.read())) as npz:
-                if key not in npz:
-                    return False
+            if key not in archive.npz_keys(member):
+                return False
         return True
 
 
@@ -325,29 +381,63 @@ def load_session_replay_buffer(
         print(f"Decoding {name}: {len(episodes)} episodes, {n_steps} frames, {len(cameras)} camera(s) "
               f"at {ow}x{oh} on {workers} threads", flush=True)
         started = time.monotonic()
-        _load_targets(replay_buffer, archive, episodes, starts, cameras[0], policy_frame)
+        members = [targets_member(e, cameras[0]) for e in episodes]
+        # bbox / mask in policy pixels, only when every episode has them.
+        target_keys = [key for key in ("bbox", "mask")
+                       if all(archive.exists(m) and key in archive.npz_keys(m) for m in members)]
+        if "mask" in target_keys:
+            replay_buffer.data.require_dataset(
+                name="mask",
+                shape=(n_steps, oh, ow),
+                chunks=(1, oh, ow),
+                compressor=ReplayBuffer.resolve_compressor("disk"),
+                dtype=np.uint8,
+            )
+
+    # One archive per thread: a ZipFile's members share its file position, and
+    # opening one on a network volume takes seconds.
+    local = threading.local()
+    thread_archives: list[SessionArchive] = []
+
+    def thread_archive() -> SessionArchive:
+        if not hasattr(local, "archive"):
+            local.archive = SessionArchive(path)
+            thread_archives.append(local.archive)
+        return local.archive
+
+    def load_targets(member: str, start: int) -> np.ndarray | None:
+        # Per episode: unpacked, a session's full-resolution masks are hundreds of GB.
+        targets = read_targets(thread_archive(), member)
+        if "mask" in target_keys:
+            masks = replay_buffer.data["mask"]
+            for k, mask in enumerate(targets["mask"]):
+                masks[start + k] = policy_frame.mask(mask)
+        return policy_frame.box(targets["bbox"]) if "bbox" in target_keys else None
 
     def decode(episode: str, cam_id: int, start: int, n: int) -> None:
         camera = cameras[cam_id]
         img_array = replay_buffer.data[f"camera{cam_id}_rgb"]
-        # One archive per task: a ZipFile's members share its file position.
-        with SessionArchive(path) as task_archive:
-            tags = read_tags(task_archive, tags_member(episode, camera))
-            with task_archive.open(video_member(episode, camera)) as fh, av.open(fh) as container:
-                stream = container.streams.video[0]
-                stream.thread_count = 1
-                k = 0
-                for frame in container.decode(stream):
-                    if k >= n:
-                        break
-                    img = frame.to_ndarray(format="rgb24")
-                    img_array[start + k] = policy_frame(img, tags[k] if tags else [])
-                    k += 1
+        task_archive = thread_archive()
+        tags = read_tags(task_archive, tags_member(episode, camera))
+        with task_archive.open(video_member(episode, camera)) as fh, av.open(fh) as container:
+            stream = container.streams.video[0]
+            stream.thread_count = 1
+            k = 0
+            for frame in container.decode(stream):
+                if k >= n:
+                    break
+                img = frame.to_ndarray(format="rgb24")
+                img_array[start + k] = policy_frame(img, tags[k] if tags else [])
+                k += 1
         if k != n:
             raise ValueError(f"{episode}: {camera}.mp4 has {k} frames, the table {n}")
 
     printed = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        target_futures = [
+            executor.submit(load_targets, member, int(start))
+            for member, start in zip(members, starts)
+        ] if target_keys else []
         futures = [
             executor.submit(decode, episode, cam_id, int(start), int(end - start))
             for episode, start, end in zip(episodes, starts, ends)
@@ -358,6 +448,11 @@ def load_session_replay_buffer(
             if time.monotonic() - printed >= PROGRESS_INTERVAL_S and done < len(futures):
                 printed = time.monotonic()
                 print(f"Decoding {name}: {done}/{len(futures)} videos", flush=True)
+        boxes = [future.result() for future in target_futures]
+    for task_archive in thread_archives:
+        task_archive.close()
+    if "bbox" in target_keys:
+        replay_buffer.data.array(name="bbox", data=np.concatenate(boxes), compressor=None)
     print(f"Decoded {name} in {time.monotonic() - started:.0f}s", flush=True)
     return replay_buffer
 
@@ -366,31 +461,3 @@ def _columns(table, module: str, fields) -> np.ndarray:
     return np.stack(
         [table.column(f"obs.{module}.{f}").to_numpy() for f in fields],
         axis=-1).astype(np.float32)
-
-
-def _load_targets(replay_buffer: ReplayBuffer, archive: SessionArchive, episodes: list[str],
-                  starts, camera: str, policy_frame: PolicyFrame) -> None:
-    """Add ``bbox`` / ``mask`` in policy pixels when every episode has them."""
-    per_episode = [read_targets(archive, targets_member(e, camera)) for e in episodes]
-    ow, oh = policy_frame.out_res
-    n_steps = replay_buffer.n_steps
-    for key in ("bbox", "mask"):
-        if not all(key in t for t in per_episode):
-            continue
-        if key == "bbox":
-            replay_buffer.data.array(
-                name="bbox",
-                data=np.concatenate([policy_frame.box(t["bbox"]) for t in per_episode]),
-                compressor=None,
-            )
-            continue
-        out = replay_buffer.data.require_dataset(
-            name="mask",
-            shape=(n_steps, oh, ow),
-            chunks=(1, oh, ow),
-            compressor=ReplayBuffer.resolve_compressor("disk"),
-            dtype=np.uint8,
-        )
-        for start, targets in zip(starts, per_episode):
-            for k, mask in enumerate(targets["mask"]):
-                out[int(start) + k] = policy_frame.mask(mask)

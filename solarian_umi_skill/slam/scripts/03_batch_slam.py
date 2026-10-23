@@ -17,6 +17,7 @@ import pathlib
 import click
 import subprocess
 import multiprocessing
+import uuid
 import concurrent.futures
 from tqdm import tqdm
 import cv2
@@ -28,7 +29,7 @@ from solarian_umi_skill.slam.support.cv_util import draw_predefined_mask
 
 
 # %%
-def runner(cmd, cwd, stdout_path, stderr_path, timeout, **kwargs):
+def runner(cmd, cwd, stdout_path, stderr_path, timeout, container, **kwargs):
     try:
         return subprocess.run(cmd,                       
             cwd=str(cwd),
@@ -37,7 +38,18 @@ def runner(cmd, cwd, stdout_path, stderr_path, timeout, **kwargs):
             timeout=timeout,
             **kwargs)
     except subprocess.TimeoutExpired as e:
+        # The timeout only kills the docker client. The container would go on
+        # tracking, or hang in Shutdown, and slow every demo after it.
+        subprocess.run(['docker', 'kill', container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return e
+
+
+def failure_reason(stdout_path):
+    """gopro_slam's own reason to stop, else its last line; shutdown messages follow the reason."""
+    lines = [line.strip() for line in stdout_path.read_text(errors='replace').splitlines() if line.strip()] \
+        if stdout_path.is_file() else []
+    terminating = [line for line in lines if 'Terminating' in line]
+    return (terminating or lines or [''])[-1]
 
 
 # %%
@@ -70,6 +82,7 @@ def main(input_dir, map_path, docker_image, num_workers, max_lost_frames, timeou
     ensure_image(docker_image, allow_pull=not no_docker_pull)
     setting_volume, setting_path = slam_setting_mount(slam_settings)
 
+    submitted = dict()
     with tqdm(total=len(input_video_dirs)) as pbar:
         # one chunk per thread, therefore no synchronization needed
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -107,10 +120,12 @@ def main(input_dir, map_path, docker_image, num_workers, max_lost_frames, timeou
                 map_mount_target = pathlib.Path('/map').joinpath(map_mount_source.name)
 
                 # run SLAM
+                container = f'umi-slam-{uuid.uuid4().hex[:12]}'
                 cmd = [
                     'docker',
                     'run',
                     '--rm', # delete after finish
+                    '--name', container,
                     '--volume', str(video_dir) + ':' + '/data',
                     '--volume', str(map_mount_source.parent) + ':' + str(map_mount_target.parent),
                     *setting_volume,
@@ -135,15 +150,26 @@ def main(input_dir, map_path, docker_image, num_workers, max_lost_frames, timeou
                         return_when=concurrent.futures.FIRST_COMPLETED)
                     pbar.update(len(completed))
 
-                futures.add(executor.submit(runner,
-                    cmd, str(video_dir), stdout_path, stderr_path, timeout))
-                # print(' '.join(cmd))
+                future = executor.submit(runner,
+                    cmd, str(video_dir), stdout_path, stderr_path, timeout, container)
+                futures.add(future)
+                submitted[future] = video_dir
 
             completed, futures = concurrent.futures.wait(futures)
             pbar.update(len(completed))
 
-    print("Done! Result:")
-    print([x.result() for x in completed])
+    results = {video_dir: future.result() for future, video_dir in submitted.items()}
+    failed = {video_dir: result for video_dir, result in results.items()
+              if isinstance(result, subprocess.TimeoutExpired)
+              or result.returncode != 0
+              or not video_dir.joinpath('camera_trajectory.csv').is_file()}
+    print(f"Done! {len(results) - len(failed)} of {len(results)} videos tracked.")
+    for video_dir, result in sorted(failed.items(), key=lambda item: item[0].name):
+        if isinstance(result, subprocess.TimeoutExpired):
+            status = f"timeout after {result.timeout:.0f} s"
+        else:
+            status = f"exit {result.returncode}"
+        print(f"  {video_dir.name}: {status}, no trajectory. {failure_reason(video_dir.joinpath('slam_stdout.txt'))}")
 
 # %%
 if __name__ == "__main__":

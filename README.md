@@ -155,7 +155,7 @@ The video keeps the full resolution, so tracking and segmentation (SAM 2) can ru
 
 `--format zarr` writes the 224x224 `dataset.zarr.zip` instead.
 
-A clip named `mapping.mp4` in the session directory is the mapping video, and one named `gripper_calibration.mp4` is the gripper calibration video (either case). Without them, the largest clip is the mapping video and the earliest remaining clip of each camera is its gripper calibration. A Lumi clip renamed this way gets the leftover `.imu.json` sidecar whose length best matches it.
+A clip named `mapping.mp4` in the session directory is the mapping video, and one named `gripper_calibration.mp4` is the gripper calibration video (either case). Without them, the largest clip is the mapping video and the earliest remaining clip of each camera is its gripper calibration. A Lumi clip renamed this way gets the leftover `.imu.json` sidecar whose length best matches it. A clip that cannot be opened, such as one whose recorder lost power while saving it, moves with its sidecar to `<session>/unreadable_videos/` and the session goes on without it; an unreadable mapping or gripper calibration video stops the run.
 
 `--camera gopro` (the default) uses the GoPro Max Lens yaml shipped in the ORB-SLAM3 image.
 
@@ -163,8 +163,30 @@ A clip named `mapping.mp4` in the session directory is the mapping video, and on
 
 1. Each demo's video is remapped into GoPro Max Lens geometry at 1440x1080, black where the Lumi lens does not see. The recording stays beside it as `raw_video_native.mp4`. The camera's calibration comes from `<session>/camera_calibration.json`, else `conf/calibrations/cameras/<serial>.json` in the directory the command runs from.
 2. `imu_data.json` is built from the collector's `.imu.json` sidecars, which keep each sample's time. The GPMF track only has one payload per second.
-3. The camera-to-IMU time offset of each demo and one camera-to-IMU rotation are measured by matching the video's rotation to the gyro. They are written to `<session>/camera_imu.json` and to `demos/mapping/lumi_slam.yaml`.
+3. The camera-to-IMU time offset of each demo and one camera-to-IMU rotation are measured by matching the video's rotation to the gyro. They are written to `<session>/camera_imu.json` and to `demos/mapping/lumi_slam.yaml`, with the GoPro file's IMU noise: the Lumi's MPU-6050 reads about 3.5% over g when still, and trusting its accelerometer more made demos diverge when the camera turned to look straight down. So is the sensor's rolling-shutter readout, measured from how much later the gyro lines up with features lower in the frame (about 22 ms top to bottom on the IMX477). `--rolling-shutter` undoes it in the remap with the gyro's rotation over each frame's readout. It is off by default: on a 148-demo session it kept about ten more demos tracking through medium-speed turns, but about as many of those diverged, and the yield stayed within the spread between maps.
 4. After batch SLAM, `trajectory_report.txt` lists each demo's lost fraction, extent and largest frame-to-frame jump. The pipeline stops before the dataset plan when most demos fail those limits. `python -m solarian_umi_skill.slam.trajectory_check <session>` prints the same report for an existing session.
+
+ORB-SLAM3 builds a different map each time it runs on the same mapping video, and how many demos track depends mostly on the map: on one 148-demo Lumi session, five maps let 2, 70, 94, 95 and 103 demos through. So the pipeline builds six maps side by side (`run_pipeline.py --map-candidates N`), tracks 24 demos spread over the session on each (`--probe-demos N`), and keeps the map most of them pass on. The other maps stay in `demos/mapping/map_candidates/`, and each candidate's score is in `<session>/map_selection.json`. Good maps are rare: on a 247-demo merge of two sessions, nine new maps passed 13 to 37 of 48 probe demos, against 42 for a map kept from an earlier run, which let 221 demos through where a fresh best of three had let 111. `--map-library DIR` (`solarian umi-slam --map-library DIR`) keeps the best map of each mapping take there. A later run on the same take, such as a merged dataset that shares it, scores that map alongside its new ones, keeps it on a tie, and replaces it only when a new map beats it. A map is tracked with the yaml it was built with, saved beside it as `map_slam_settings.yaml`, not with the session's new fit: on a map built with another camera-to-IMU rotation, 0.85° away cost a fifth of the passing demos and 2.5° nearly all of them. A `demos/mapping/map_atlas.osa` that already exists is used as it is, with the `map_slam_settings.yaml` beside it if there is one. Tracking on a map does not repeat either: of the demos that diverge on one run, most pass on another. So demos with no trajectory, or one that fails the limits, are tracked again on the kept map, up to twice (`--retries N`).
+
+`03_batch_slam.py` ends with each demo that got no trajectory and why: the exit code or timeout, and ORB-SLAM3's last reason to stop, such as `Lost tracking on 60 >= 60 frames`. Its `slam_stdout.txt` stays in the demo's folder.
+
+### Recording a session SLAM can track
+
+A demo is lost when ORB-SLAM3 cannot place 60 of its frames (two seconds at 30 fps; they need not be in a row) or when its trajectory fails the limits above. On that same session, recorded with 8 ms exposure, demos dropped more often the faster the wrist turned, because a fast turn blurs the frames:
+
+| Peak wrist rotation | Demos dropped |
+| --- | --- |
+| under 1.5 rad/s | 0% |
+| 1.5 to 2.0 rad/s | 6% |
+| 2.0 to 2.4 rad/s | 27% |
+| 2.4 rad/s and over | 58% |
+
+A session recorded with 4 ms exposure (`max_exposure_us: 4000` in the collector config) lost no demo to blur, the six that turned faster than 2.0 rad/s included. The table had plenty of texture: ORB-SLAM3 found as many features in the frames of failed demos as in those of tracked ones, looking straight down included.
+
+- Record with a short exposure, 4 ms or less, and light the table so the image stays bright at that exposure.
+- In the mapping video, cover every view the demos will have: look straight down on the work area from the heights the demos reach, as well as across the table. With a poor map, demos that looked down steeper than the mapping video did were the ones lost.
+- Hold still for half a second at the start of each demo, where SLAM finds its place in the map.
+- A plain, glossy or regularly patterned table (one colour, a sheet of glass, a grid of tiles) gives SLAM little to tell views apart by. Put tape or a printed mat on it before recording the mapping video and leave it in place for the whole session: the map holds only what the mapping video saw, so texture added or moved afterwards helps no demo find the map.
 
 `umi-calibrate-lumi` opens a fullscreen window with solarian's 9x6 checkerboard on the left and the Lumi's live view on the right, with the detected corners and a 4x4 grid over the frame. Hold the Lumi in front of the screen and press SPACE to keep a view. Keep going until every edge cell turns from red to green and there are 15 views, then press c. A detected board is painted over in the preview, because the lens also sees the preview and could detect a picture of the board in it. What stays the same while the camera moves (the gripper) is tinted blue, and edge cells it mostly covers are not required, so the camera can stay mounted on the collector. Needs ffmpeg. Saved frames stay in `.cache/lumi_calibration/<serial>_<time>/`; `umi-calibrate-lumi <that folder> --serial S` calibrates from them again.
 

@@ -26,6 +26,10 @@ from solarian_umi_skill.slam.fisheye_model import Fisheye
 OFFSET_SEARCH_S = (-1.2, 0.3)
 MIN_PEAK_CORRELATION = 0.6
 MIN_INLIERS = 25
+# Horizontal bands of rows, top first, each measured on its own features: a
+# rolling shutter captures the lower bands later.
+ROW_BANDS = 3
+MIN_BAND_FEATURES = 25
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,8 @@ class CameraRotation:
     t_s: np.ndarray  # (M,) video seconds, midway between the frame pair
     omega: np.ndarray  # (M, 3) rad/s in the camera frame; NaN where tracking failed
     dt_s: np.ndarray  # (M,) seconds between the frame pair
+    # (M, ROW_BANDS, 3) the same from the features in each band of rows; None when not measured.
+    band_omega: np.ndarray | None = None
 
 
 def camera_angular_velocity(
@@ -44,7 +50,7 @@ def camera_angular_velocity(
     """
     height = int(round(width * model.height / model.width))
     small = model.resized(width, height)
-    rotations: list[np.ndarray] = []
+    rotations: list[tuple[np.ndarray, np.ndarray]] = []
     prev = None
     with av.open(str(video)) as container:
         stream = container.streams.video[0]
@@ -57,40 +63,65 @@ def camera_angular_velocity(
     n_frames = len(rotations) + 1
     frame_t = np.arange(n_frames) / fps if frame_video_s is None else frame_video_s[:n_frames]
     dt = np.diff(frame_t)
-    omega = np.array(rotations).reshape(-1, 3) / dt[:, None]
-    return CameraRotation(t_s=frame_t[:-1] + dt / 2, omega=omega, dt_s=dt)
+    omega = np.array([r[0] for r in rotations]).reshape(-1, 3) / dt[:, None]
+    bands = np.array([r[1] for r in rotations]).reshape(-1, ROW_BANDS, 3) / dt[:, None, None]
+    return CameraRotation(t_s=frame_t[:-1] + dt / 2, omega=omega, dt_s=dt, band_omega=bands)
 
 
-def _pair_omega(a: np.ndarray, b: np.ndarray, model: Fisheye) -> np.ndarray:
-    """Rotation vector of the camera from frame a to frame b, radians (NaN if unknown)."""
+def _pair_omega(a: np.ndarray, b: np.ndarray, model: Fisheye) -> tuple[np.ndarray, np.ndarray]:
+    """Rotation vector of the camera from frame a to frame b, radians (NaN if unknown),
+    and the (ROW_BANDS, 3) rotation-only fit to the features in each band of rows."""
     nan = np.full(3, np.nan)
+    no_bands = np.full((ROW_BANDS, 3), np.nan)
     pa = cv2.goodFeaturesToTrack(a, maxCorners=400, qualityLevel=0.01, minDistance=12, blockSize=7)
     if pa is None or len(pa) < MIN_INLIERS:
-        return nan
+        return nan, no_bands
     pb, ok, _ = cv2.calcOpticalFlowPyrLK(a, b, pa, None, winSize=(21, 21), maxLevel=3)
     back, ok_back, _ = cv2.calcOpticalFlowPyrLK(b, a, pb, None, winSize=(21, 21), maxLevel=3)
     good = (ok.ravel() == 1) & (ok_back.ravel() == 1) & (np.linalg.norm(back - pa, axis=2).ravel() < 0.5)
+    rows = pa.reshape(-1, 2)[good, 1]
     ra, va = model.unproject(pa.reshape(-1, 2)[good])
     rb, vb = model.unproject(pb.reshape(-1, 2)[good])
+    bands = no_bands.copy()
+    band = np.minimum((rows / model.height * ROW_BANDS).astype(int), ROW_BANDS - 1)
+    for k in range(ROW_BANDS):
+        sel = va & vb & (band == k)
+        if sel.sum() >= MIN_BAND_FEATURES:
+            bands[k] = _trimmed_rotation(ra[sel], rb[sel])
     # Normalized pinhole points need rays in front of the camera.
     use = va & vb & (ra[:, 2] > 0.15) & (rb[:, 2] > 0.15)
     if use.sum() < MIN_INLIERS:
-        return nan
+        return nan, bands
     na = ra[use, :2] / ra[use, 2:]
     nb = rb[use, :2] / rb[use, 2:]
     E, inliers = cv2.findEssentialMat(na, nb, np.eye(3), method=cv2.RANSAC, prob=0.999, threshold=1.0 / model.fx)
     if E is None or E.shape != (3, 3) or inliers is None or inliers.sum() < MIN_INLIERS:
-        return _rotation_only(ra[use], rb[use])
+        return _rotation_only(ra[use], rb[use]), bands
     _, R, _, pose_inliers = cv2.recoverPose(E, na, nb, np.eye(3), mask=inliers.copy())
     if int((pose_inliers > 0).sum()) < MIN_INLIERS:
-        return _rotation_only(ra[use], rb[use])
+        return _rotation_only(ra[use], rb[use]), bands
     rvec, _ = cv2.Rodrigues(R)
-    return -rvec.ravel()
+    return -rvec.ravel(), bands
 
 
 def _rotation_only(ra: np.ndarray, rb: np.ndarray) -> np.ndarray:
     """Kabsch rb = R ra, for pairs too still for an essential matrix."""
     R = kabsch(ra, rb)
+    rvec, _ = cv2.Rodrigues(R)
+    return -rvec.ravel()
+
+
+def _trimmed_rotation(ra: np.ndarray, rb: np.ndarray) -> np.ndarray:
+    """Rotation-only fit refitted without the features it explains worst.
+
+    A band has too few features for RANSAC, and corners that stay put (the
+    image circle's edge, the gripper) pull a plain fit toward no rotation.
+    """
+    R = kabsch(ra, rb)
+    err = np.linalg.norm(rb - ra @ R.T, axis=1)
+    keep = err <= 2.0 * np.median(err)
+    if keep.sum() >= MIN_BAND_FEATURES:
+        R = kabsch(ra[keep], rb[keep])
     rvec, _ = cv2.Rodrigues(R)
     return -rvec.ravel()
 

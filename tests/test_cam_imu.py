@@ -66,7 +66,9 @@ def test_pair_omega_measures_a_known_rotation_between_two_fisheye_frames():
     frame_b = build_remap(SMALL, SMALL, rotation_src_from_dst=R).apply(texture)
     frame_a = build_remap(SMALL, SMALL).apply(texture)
 
-    assert np.allclose(_pair_omega(frame_a, frame_b, SMALL), rvec, atol=2e-3)
+    omega, bands = _pair_omega(frame_a, frame_b, SMALL)
+    assert np.allclose(omega, rvec, atol=2e-3)
+    assert np.allclose(bands, rvec[None, :], atol=3e-3)
 
 
 def test_frame_timestamps_put_imu_samples_on_the_video_frame_grid():

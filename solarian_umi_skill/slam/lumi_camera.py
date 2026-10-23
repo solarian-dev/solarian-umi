@@ -19,13 +19,13 @@ from solarian_umi_skill.slam.support.cv_util import draw_predefined_mask
 
 SLAM_SIZE = (960, 720)
 
-# Three times the MPU-6050's noise at rest (9e-5 rad/s/√Hz, 2e-3 m/s²/√Hz
-# through its 42 Hz filter). The GoPro file's 1.5e-3 and 1.7e-2 told SLAM to
-# distrust this IMU, and demos loaded onto the map jumped 6 to 10 cm between
-# frames; the margin keeps the worst demos steadier than the bare figures.
-NOISE_GYRO = 3.0e-4  # rad/s/√Hz
-NOISE_ACC = 6.0e-3  # m/s²/√Hz
-# Walks stay the GoPro file's.
+# The GoPro file's figures, far above the MPU-6050's noise at rest (9e-5 rad/s/√Hz,
+# 2e-3 m/s²/√Hz). In motion its accelerometer is worse than that: it reads about
+# 3.5% over g when still. Trusting it more (6e-3 m/s²/√Hz) made demos diverge
+# when the camera turned to look straight down: 17 against 8 of 148 on one session.
+# The gyro figure barely matters.
+NOISE_GYRO = 1.5e-3  # rad/s/√Hz
+NOISE_ACC = 1.7e-2  # m/s²/√Hz
 GYRO_WALK = 5.0e-5  # rad/s²/√Hz
 ACC_WALK = 5.5e-3  # m/s³/√Hz
 

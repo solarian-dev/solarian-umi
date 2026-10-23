@@ -14,10 +14,21 @@ import os
 
 # %%
 import pathlib
+import av
 import click
 import shutil
 from solarian_umi_skill.slam.support.mp4_meta import camera_serial
 from solarian_umi_skill.slam.support.timecode_util import mp4_get_start_datetime
+
+UNREADABLE_DIR = 'unreadable_videos'
+
+
+def _readable(mp4_path: pathlib.Path) -> bool:
+    try:
+        with av.open(str(mp4_path)):
+            return True
+    except av.error.FFmpegError:
+        return False
 
 # %%
 @click.command(help='Session directories. Assumming mp4 videos are in <session_dir>/raw_videos')
@@ -42,6 +53,22 @@ def main(session_dir):
             for mp4_path in input_dir.iterdir():
                 if mp4_path.name.lower() == name and mp4_path.name != name:
                     mp4_path.rename(input_dir.joinpath(name))
+
+        # A take whose file never got its index (the recorder lost power while
+        # saving it) cannot be opened; the session goes on without it.
+        unreadable = [p for p in sorted(input_dir.glob('*')) if p.suffix.lower() == '.mp4'
+                      and not p.is_symlink() and not _readable(p)]
+        for mp4_path in unreadable:
+            if mp4_path.name in ('mapping.mp4', 'gripper_calibration.mp4'):
+                raise SystemExit(f"{mp4_path} cannot be opened; record that take again or mark another one.")
+            aside = session.joinpath(UNREADABLE_DIR)
+            aside.mkdir(exist_ok=True)
+            for path in (mp4_path, mp4_path.with_suffix('.imu.json')):
+                if path.is_file():
+                    shutil.move(path, aside.joinpath(path.name))
+        if unreadable:
+            print(f"Left out {len(unreadable)} video(s) that cannot be opened (moved to {session.joinpath(UNREADABLE_DIR)}): "
+                  + ', '.join(p.name for p in unreadable))
 
         # create gripper calibration video if don't exist
         gripper_cal_dir = input_dir.joinpath('gripper_calibration')
