@@ -17,19 +17,20 @@ import logging
 from solarian_umi_skill.diffusion_policy.model.common.module_attr_mixin import ModuleAttrMixin
 
 from solarian_umi_skill.diffusion_policy.common.pytorch_util import replace_submodules
+from solarian_umi_skill.targets import DEFAULT_POINT_BOX_PX, target_keys, target_kind
 
 logger = logging.getLogger(__name__)
 
 
-def _expand_vit_patch_embed_to_4ch(model: nn.Module) -> None:
-    """Replace ``model.patch_embed.proj`` with a 4-input-channel conv.
+def _expand_vit_patch_embed(model: nn.Module, n_extra: int) -> None:
+    """Replace ``model.patch_embed.proj`` with a ``3 + n_extra``-input-channel conv.
 
     The first three input-channel slices are copied verbatim from the
     pretrained conv so the RGB path is bit-identical at initialization;
-    the new 4th input-channel slice is zero-initialized so the modified
+    the new target-channel slices are zero-initialized so the modified
     network's output equals the original network's output on RGB-only
-    inputs at step 0. The optimizer then grows the 4th-channel weights
-    only when the mask carries gradient-reducing information.
+    inputs at step 0. The optimizer then grows a target channel's weights
+    only when that target carries gradient-reducing information.
 
     Implements the "zero-init weight expansion" / identity-preserving-at-init
     recipe used to bolt new modalities onto pretrained backbones.
@@ -53,7 +54,7 @@ def _expand_vit_patch_embed_to_4ch(model: nn.Module) -> None:
         )
 
     new_proj = nn.Conv2d(
-        in_channels=4,
+        in_channels=3 + n_extra,
         out_channels=old_proj.out_channels,
         kernel_size=old_proj.kernel_size,
         stride=old_proj.stride,
@@ -105,6 +106,24 @@ def rasterize_bbox_to_mask(bbox: torch.Tensor, H: int, W: int) -> torch.Tensor:
     return mask.reshape(*leading_shape, 1, H, W)
 
 
+def rasterize_point_to_mask(point: torch.Tensor, H: int, W: int, side: float) -> torch.Tensor:
+    """Rasterize pixel-space points to the ``side`` square centred on each.
+
+    Args:
+        point: ``(..., 2)`` ``[x, y]`` in pixels of the ``H x W`` image; a
+            negative coordinate is "no point" and gives an empty mask.
+        side: the square's side in pixels.
+
+    Returns:
+        Float tensor of shape ``(..., 1, H, W)`` with values in ``{0, 1}``.
+    """
+    half = side / 2
+    box = torch.cat([point - half, point + half], dim=-1)
+    absent = (point < 0).any(dim=-1, keepdim=True)
+    box = torch.where(absent, torch.full_like(box, -1), box)
+    return rasterize_bbox_to_mask(box, H=H, W=W)
+
+
 def pool_box_tokens(
     tokens: torch.Tensor,
     mask: torch.Tensor,
@@ -148,56 +167,110 @@ def pool_box_tokens(
     return torch.cat([tokens[:, 0], box_mean, geometry], dim=1)
 
 
+def pool_targets(tokens: torch.Tensor, masks: torch.Tensor, grid_size: tuple,
+                 num_prefix_tokens: int) -> torch.Tensor:
+    """CLS, then :func:`pool_box_tokens`' box mean and geometry for each target channel.
+
+    Args:
+        masks: ``(N, K, H, W)``, one channel per target, in shape_meta order.
+
+    Returns:
+        ``(N, D + K * (D + 5))``; for one target, :func:`pool_box_tokens`' own.
+    """
+    dim = tokens.shape[-1]
+    pooled = [pool_box_tokens(tokens, masks[:, k:k + 1], grid_size, num_prefix_tokens)
+              for k in range(masks.shape[1])]
+    return torch.cat([pooled[0], *(p[:, dim:] for p in pooled[1:])], dim=1)
+
+
 def widen_cond_for_box_pool(state_dict: dict, encoder: "TimmObsEncoder",
                             target_state_dict: dict) -> int:
-    """Fit a cls-conditioned policy state dict to ``encoder``'s box_pool width.
+    """Fit a policy state dict that pooled fewer targets to ``encoder``'s box_pool width.
 
     Each UNet ``cond_encoder`` Linear reads ``[diffusion step embedding |
-    obs features]``. Its cls-checkpoint columns move to where the CLS token
-    and the low-dim features sit in the wider box_pool features; the box-mean
-    and geometry columns start at zero. The backbone is unchanged, so the
+    obs features]``. A routed rgb frame's features are CLS, then ``D + 5``
+    per target. A checkpoint with fewer of them (none: a cls checkpoint; one:
+    a single-target box_pool one) has its columns moved to where the CLS
+    token, its targets and the low-dim features sit in the wider features;
+    the new targets' columns start at zero. The backbone is unchanged, so the
     widened policy predicts exactly what the checkpoint did until training
     moves those weights.
 
     Args:
-        state_dict: policy state dict from a cls checkpoint, edited in place.
+        state_dict: policy state dict from the checkpoint, edited in place.
         encoder: the box_pool obs encoder of the policy being initialized.
         target_state_dict: that policy's own state dict, for the widths.
 
     Returns:
         How many weights were widened. Weights already at the target width,
-        and ones whose width matches neither layout, are left for the strict
-        load to accept or reject.
+        and ones whose width matches no layout, are left for the strict load
+        to accept or reject.
     """
     obs_meta = encoder.shape_meta['obs']
-    columns = []
-    new_width = 0
-    for key in encoder.rgb_keys:
-        dim = encoder.key_model_map[key].num_features
-        frame_width = 2 * dim + 5 if key in encoder.bbox_mask_map else dim
-        for _ in range(obs_meta[key]['horizon']):
-            columns.extend(range(new_width, new_width + dim))
-            new_width += frame_width
-    for key in encoder.low_dim_keys:
-        size = obs_meta[key]['horizon'] * math.prod(obs_meta[key]['shape'])
-        columns.extend(range(new_width, new_width + size))
-        new_width += size
-    columns = torch.tensor(columns)
+    max_targets = max((len(v) for v in encoder.bbox_mask_map.values()), default=0)
 
+    def layout(source_targets: int) -> tuple[torch.Tensor, int]:
+        """Where a checkpoint pooling ``source_targets`` per frame puts each of its columns, and the new width."""
+        columns = []
+        new_width = 0
+        for key in encoder.rgb_keys:
+            dim = encoder.key_model_map[key].num_features
+            n = len(encoder.bbox_mask_map.get(key, ()))
+            frame_width = dim + n * (dim + 5)
+            kept = dim + min(n, source_targets) * (dim + 5)
+            for _ in range(obs_meta[key]['horizon']):
+                columns.extend(range(new_width, new_width + kept))
+                new_width += frame_width
+        for key in encoder.low_dim_keys:
+            size = obs_meta[key]['horizon'] * math.prod(obs_meta[key]['shape'])
+            columns.extend(range(new_width, new_width + size))
+            new_width += size
+        return torch.tensor(columns), new_width
+
+    layouts = [layout(n) for n in range(max_targets)]
     widened = 0
     for name, weight in state_dict.items():
         if not name.endswith('cond_encoder.1.weight'):
             continue
         target_cols = target_state_dict[name].shape[1]
-        step_dim = target_cols - new_width
-        if weight.shape[1] != step_dim + len(columns) or weight.shape[1] == target_cols:
+        if weight.shape[1] == target_cols:
             continue
-        wide = weight.new_zeros(weight.shape[0], target_cols)
-        wide[:, :step_dim] = weight[:, :step_dim]
-        wide[:, step_dim + columns] = weight[:, step_dim:]
-        state_dict[name] = wide
-        widened += 1
+        for columns, new_width in layouts:
+            step_dim = target_cols - new_width
+            if weight.shape[1] != step_dim + len(columns):
+                continue
+            wide = weight.new_zeros(weight.shape[0], target_cols)
+            wide[:, :step_dim] = weight[:, :step_dim]
+            wide[:, step_dim + columns] = weight[:, step_dim:]
+            state_dict[name] = wide
+            widened += 1
+            break
     return widened
+
+
+def widen_patch_embed(state_dict: dict, target_state_dict: dict) -> int:
+    """Zero-pad ``patch_embed.proj`` weights of a checkpoint with fewer target channels.
+
+    The checkpoint's RGB and target slices keep their place; the new
+    targets' slices start at zero, as :func:`_expand_vit_patch_embed` makes
+    them, so the padded encoder sees what the checkpoint's did.
+
+    Returns:
+        How many weights were padded.
+    """
+    padded = 0
+    for name, weight in state_dict.items():
+        if not name.endswith('patch_embed.proj.weight') or name not in target_state_dict:
+            continue
+        target = target_state_dict[name]
+        if weight.ndim != 4 or weight.shape[1] >= target.shape[1] \
+                or weight.shape[:1] + weight.shape[2:] != target.shape[:1] + target.shape[2:]:
+            continue
+        wide = weight.new_zeros(target.shape)
+        wide[:, :weight.shape[1]] = weight
+        state_dict[name] = wide
+        padded += 1
+    return padded
 
 
 class MaskAwareImageTransform(nn.Module):
@@ -347,23 +420,24 @@ class TimmObsEncoder(ModuleAttrMixin):
                 image_shape = shape[1:]
 
         # ---- target -> mask-channel routing ---------------------------------
-        # The target reaches the ViT as a 4th channel on its rgb key: either a
-        # low_dim box with `bbox_mode: mask_channel`, rasterized in forward(),
-        # or a `type: mask` entry (a (1, H, W) segmentation mask) used as is.
-        # Neither is fed again as a flat feature.
-        # `bbox_mask_map`: rgb_key -> target key routed onto that rgb.
+        # Each target reaches the ViT as one more channel on its rgb key, in
+        # shape_meta order: a low_dim box (`bbox_mode: mask_channel`) or point
+        # (`point_mode: mask_channel`), rasterized in forward(), or a
+        # `type: mask` entry (a (1, H, W) segmentation mask) used as is.
+        # None is fed again as a flat feature.
+        # `bbox_mask_map`: rgb_key -> target keys routed onto that rgb.
         bbox_mask_map = dict()
-        bbox_mask_horizon = dict()  # rgb_key -> expected matching horizon
-        for key, attr in obs_shape_meta.items():
-            type = attr.get('type', 'low_dim')
+        for key, kind in target_keys(obs_shape_meta).items():
+            attr = obs_shape_meta[key]
             shape = tuple(attr['shape'])
-            if type == 'low_dim' and attr.get('bbox_mode', 'low_dim') == 'mask_channel':
-                if shape != (4,):
-                    raise RuntimeError(
-                        f"bbox_mode=mask_channel requires shape [4] (x0,y0,x1,y1) "
-                        f"for key '{key}', got {shape}.")
-            elif type != 'mask':
-                continue
+            if kind == 'box' and shape != (4,):
+                raise RuntimeError(
+                    f"bbox_mode=mask_channel requires shape [4] (x0,y0,x1,y1) "
+                    f"for key '{key}', got {shape}.")
+            if kind == 'point' and shape != (2,):
+                raise RuntimeError(
+                    f"point_mode=mask_channel requires shape [2] (x,y) "
+                    f"for key '{key}', got {shape}.")
             target_rgb_key = attr.get('target_rgb_key')
             if target_rgb_key is None:
                 rgb_candidates = [
@@ -381,17 +455,12 @@ class TimmObsEncoder(ModuleAttrMixin):
                 raise RuntimeError(
                     f"target key '{key}' targets rgb_key='{target_rgb_key}' "
                     f"which is not an rgb obs entry.")
-            if type == 'mask':
+            if kind == 'mask':
                 rgb_hw = tuple(obs_shape_meta[target_rgb_key]['shape'])[1:]
                 if shape != (1,) + rgb_hw:
                     raise RuntimeError(
                         f"mask '{key}' must have shape [1, {rgb_hw[0]}, "
                         f"{rgb_hw[1]}] to match '{target_rgb_key}', got {shape}.")
-            if target_rgb_key in bbox_mask_map:
-                raise RuntimeError(
-                    f"Multiple target keys are routed to rgb_key="
-                    f"'{target_rgb_key}'. Only one mask channel per "
-                    f"image is supported.")
             rgb_horizon = int(obs_shape_meta[target_rgb_key]['horizon'])
             target_horizon = int(attr['horizon'])
             if target_horizon != rgb_horizon:
@@ -399,8 +468,7 @@ class TimmObsEncoder(ModuleAttrMixin):
                     f"target '{key}' (horizon={target_horizon}) and image "
                     f"'{target_rgb_key}' (horizon={rgb_horizon}) must share "
                     f"the same horizon.")
-            bbox_mask_map[target_rgb_key] = key
-            bbox_mask_horizon[target_rgb_key] = rgb_horizon
+            bbox_mask_map.setdefault(target_rgb_key, []).append(key)
 
         if transforms is not None and not isinstance(transforms[0], torch.nn.Module):
             assert transforms[0].type == 'RandomCrop'
@@ -438,7 +506,7 @@ class TimmObsEncoder(ModuleAttrMixin):
                             "would be applied multiple times to the same "
                             "tensor). Disable share_rgb_model or unset the "
                             "mask routing for this key.")
-                    _expand_vit_patch_embed_to_4ch(this_model)
+                    _expand_vit_patch_embed(this_model, len(bbox_mask_map[key]))
                     this_transform = MaskAwareImageTransform(
                         geometric=geometric_transforms,
                         rgb_only=color_transforms,
@@ -450,7 +518,7 @@ class TimmObsEncoder(ModuleAttrMixin):
             elif type == 'low_dim':
                 if attr.get('ignore_by_policy', False):
                     continue
-                if attr.get('bbox_mode', 'low_dim') == 'mask_channel':
+                if target_kind(attr) is not None:
                     # consumed via the rgb path, not as a flat feature.
                     continue
                 low_dim_keys.append(key)
@@ -475,7 +543,7 @@ class TimmObsEncoder(ModuleAttrMixin):
         self.low_dim_keys = low_dim_keys
         self.key_shape_map = key_shape_map
         self.feature_aggregation = feature_aggregation
-        # rgb_key -> bbox_key. Empty dict means no mask routing is active and
+        # rgb_key -> target keys. Empty dict means no mask routing is active and
         # forward() behaves exactly as before. Persisted on the encoder so
         # downstream code (eval, loggers, debug tools) can introspect the
         # bbox integration mode without re-parsing shape_meta.
@@ -488,7 +556,8 @@ class TimmObsEncoder(ModuleAttrMixin):
                 raise RuntimeError(
                     "feature_aggregation=box_pool pools the patch tokens under "
                     "the target, so shape_meta needs a bbox entry with "
-                    "bbox_mode=mask_channel or a type: mask entry.")
+                    "bbox_mode=mask_channel, a point entry with "
+                    "point_mode=mask_channel, or a type: mask entry.")
             self.vit_grid_size = tuple(model.patch_embed.grid_size)
             self.vit_num_prefix_tokens = model.num_prefix_tokens
         elif model_name.startswith('vit'):
@@ -534,7 +603,7 @@ class TimmObsEncoder(ModuleAttrMixin):
     def aggregate_feature(self, feature, mask=None):
         if self.model_name.startswith('vit'):
             if self.feature_aggregation == 'box_pool' and mask is not None:
-                return pool_box_tokens(
+                return pool_targets(
                     feature, mask, self.vit_grid_size, self.vit_num_prefix_tokens)
             assert self.feature_aggregation in (None, 'box_pool')
             return feature[:, 0, :]
@@ -578,33 +647,42 @@ class TimmObsEncoder(ModuleAttrMixin):
             assert B == batch_size
             assert img.shape[2:] == self.key_shape_map[key]
 
-            if key in self.bbox_mask_map:
-                # The target becomes a (B, T, 1, H, W) mask concatenated as a
-                # 4th channel. Geometric transforms in MaskAwareImageTransform
-                # then crop/resize image+mask together, keeping the target
-                # aligned with the image content the ViT sees.
-                target_key = self.bbox_mask_map[key]
-                target = obs_dict[target_key]
-                assert target.shape[0] == batch_size, (
-                    f"target '{target_key}' batch={target.shape[0]} mismatches "
-                    f"image '{key}' batch={batch_size}")
-                assert target.shape[1] == T, (
-                    f"target '{target_key}' horizon={target.shape[1]} mismatches "
-                    f"image '{key}' horizon={T}")
-                assert target.shape[2:] == self.key_shape_map[target_key], (
-                    f"target '{target_key}' expected shape "
-                    f"{self.key_shape_map[target_key]}, got {tuple(target.shape[2:])}")
+            target_channels = self.bbox_mask_map.get(key, [])
+            if target_channels:
+                # Each target becomes a (B, T, 1, H, W) mask concatenated as
+                # one more channel. Geometric transforms in
+                # MaskAwareImageTransform then crop/resize image+masks
+                # together, keeping each target aligned with the image
+                # content the ViT sees.
                 _, _, _, H, W = img.shape
-                if self.shape_meta['obs'][target_key].get('type') == 'mask':
-                    mask = target.to(img.dtype)
-                else:
-                    mask = rasterize_bbox_to_mask(target, H=H, W=W).to(img.dtype)
-                img = torch.cat([img, mask], dim=2)
+                masks = []
+                for target_key in target_channels:
+                    target = obs_dict[target_key]
+                    assert target.shape[0] == batch_size, (
+                        f"target '{target_key}' batch={target.shape[0]} mismatches "
+                        f"image '{key}' batch={batch_size}")
+                    assert target.shape[1] == T, (
+                        f"target '{target_key}' horizon={target.shape[1]} mismatches "
+                        f"image '{key}' horizon={T}")
+                    assert target.shape[2:] == self.key_shape_map[target_key], (
+                        f"target '{target_key}' expected shape "
+                        f"{self.key_shape_map[target_key]}, got {tuple(target.shape[2:])}")
+                    attr = self.shape_meta['obs'][target_key]
+                    kind = target_kind(attr)
+                    if kind == 'mask':
+                        mask = target
+                    elif kind == 'point':
+                        side = attr.get('point_box_px', DEFAULT_POINT_BOX_PX)
+                        mask = rasterize_point_to_mask(target, H=H, W=W, side=side)
+                    else:
+                        mask = rasterize_bbox_to_mask(target, H=H, W=W)
+                    masks.append(mask.to(img.dtype))
+                img = torch.cat([img, *masks], dim=2)
 
             img = img.reshape(B*T, *img.shape[2:])
             img = self.key_transform_map[key](img)
             raw_feature = self.key_model_map[key](img)
-            mask = img[:, 3:4] if key in self.bbox_mask_map else None
+            mask = img[:, 3:] if target_channels else None
             feature = self.aggregate_feature(raw_feature, mask)
             assert len(feature.shape) == 2 and feature.shape[0] == B * T
             features.append(feature.reshape(B, -1))

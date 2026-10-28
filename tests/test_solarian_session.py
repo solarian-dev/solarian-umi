@@ -18,6 +18,7 @@ from hydra import compose, initialize_config_dir
 from solarian_umi_skill.diffusion_policy.common.replay_buffer import ReplayBuffer
 from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
     SessionArchive,
+    episodes_missing_target,
     has_target,
     is_session,
     load_session_replay_buffer,
@@ -26,7 +27,8 @@ from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
 from solarian_umi_skill.diffusion_policy.dataset import umi_dataset
 from solarian_umi_skill.diffusion_policy.dataset.umi_dataset import UmiDataset
 from solarian.core.ai.system1.trainer_registry import load_train_config
-from solarian_umi_skill.trainer import UmiTrainer, has_mask
+from solarian_umi_skill.slam.support.policy_frame import PolicyFrame
+from solarian_umi_skill.trainer import UmiTrainer, _missing_target_hint, has_target_array
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "slam" / "scripts"
 VIDEO_WH = (64, 48)
@@ -175,6 +177,17 @@ def test_the_loaded_session_matches_the_zarr(session, zarr_buffer):
     assert np.abs(images.astype(int) - expected.astype(int)).mean() < 3
 
 
+def test_the_episodes_missing_a_target_are_named(slam_session, tmp_path):
+    session = tmp_path / "dataset.solarian.zip"
+    _run("07_generate_session.py", "-o", session, slam_session)
+    start, end = SEGMENTS[1]
+    write_targets(session, 1, point=np.zeros((end - start, 2), dtype=np.float32))
+
+    assert episodes_missing_target(session, "point") == ["episodes/000000"]
+    assert not has_target(session, "point")
+    assert "episodes 000000 have none" in _missing_target_hint("point", "point", str(session))
+
+
 def test_targets_are_cropped_to_the_policy_resolution(slam_session, tmp_path):
     session = tmp_path / "dataset.solarian.zip"
     _run("07_generate_session.py", "-o", session, slam_session)
@@ -185,8 +198,10 @@ def test_targets_are_cropped_to_the_policy_resolution(slam_session, tmp_path):
         mask[:, 20:40, 10:30] = 1
         bbox = np.tile(np.array([10, 20, 30, 40, 0.5], dtype=np.float32), (n, 1))
         bbox[0] = -1
-        write_targets(session, index, bbox=bbox, mask=mask)
-    assert has_target(session, "mask") and has_mask(str(session))
+        point = np.tile(np.array([20, 30], dtype=np.float32), (n, 1))
+        point[0] = -1
+        write_targets(session, index, bbox=bbox, mask=mask, point=point)
+    assert has_target(session, "point") and has_target_array(str(session), "mask")
     with pytest.raises(FileExistsError):
         write_targets(session, 0, bbox=bbox)
 
@@ -195,9 +210,18 @@ def test_targets_are_cropped_to_the_policy_resolution(slam_session, tmp_path):
     # 64x48 to 32x24 keeps the whole frame, so pixels halve.
     np.testing.assert_allclose(loaded["bbox"][1], [5, 10, 15, 20, 0.5])
     np.testing.assert_array_equal(loaded["bbox"][0], [-1] * 5)
+    np.testing.assert_allclose(loaded["point"][1], [10, 15])
+    np.testing.assert_array_equal(loaded["point"][0], [-1, -1])
     masks = loaded["mask"][:]
     assert masks.shape == (loaded.n_steps, OUT_WH[1], OUT_WH[0])
     assert masks[:, 10:20, 5:15].all() and masks.sum() == loaded.n_steps * 100
+
+
+def test_a_point_the_crop_cuts_off_is_no_point():
+    # 64x48 to 24x24 keeps the centre 48x48, from x=8.
+    frame = PolicyFrame(in_res=(64, 48), out_res=(24, 24))
+    np.testing.assert_allclose(frame.point([[32, 24], [4, 24], [60, 10], [-1, -1]]),
+                               [[12, 12], [-1, -1], [-1, -1], [-1, -1]])
 
 
 def _shape_meta() -> dict:
@@ -229,7 +253,7 @@ def test_umi_dataset_and_trainer_take_a_solarian_zip(session, monkeypatch):
     sample = dataset[0]
     assert sample["obs"]["camera0_rgb"].shape == (1, 3, OUT_WH[1], OUT_WH[0])
     assert len(dataset.get_validation_dataset()) > 0
-    assert not has_mask(str(session))
+    assert not has_target_array(str(session), "mask")
 
     started = []
     monkeypatch.setattr("solarian_umi_skill.training.run_training",

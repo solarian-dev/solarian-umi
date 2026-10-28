@@ -14,7 +14,8 @@ from solarian_umi_skill.diffusion_policy.model.vision.timm_obs_encoder import (
     rasterize_bbox_to_mask,
 )
 from solarian.core.ai.system1.trainer_registry import load_train_config
-from solarian_umi_skill.trainer import UmiTrainer, has_mask, uses_mask
+from solarian_umi_skill.targets import target_keys
+from solarian_umi_skill.trainer import UmiTrainer, has_target_array
 
 TRAINING = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "templates" / "training"
 
@@ -95,11 +96,12 @@ def test_mask_shape_must_match_the_target_image():
         _encoder("mask", meta=meta)
 
 
-def test_two_targets_for_one_image_are_refused():
+def test_two_targets_for_one_image_are_two_channels_in_shape_meta_order():
     meta = _encoder_meta("mask")
     meta["obs"]["bbox"] = _encoder_meta("bbox")["obs"]["bbox"]
-    with pytest.raises(RuntimeError, match="camera0_rgb"):
-        _encoder("mask", meta=meta)
+    enc = _encoder("mask", meta=meta)
+    assert enc.bbox_mask_map == {"camera0_rgb": ["mask", "bbox"]}
+    assert enc.key_model_map["camera0_rgb"].patch_embed.proj.in_channels == 5
 
 
 # ---- dataset ---------------------------------------------------------------
@@ -192,16 +194,16 @@ def test_the_mask_template_observes_a_mask_and_no_box():
     assert "mask" in umi["task"]["dataset"]["shape_meta"]["obs"]
     assert umi["policy"]["obs_encoder"]["feature_aggregation"] == "box_pool"
     assert umi["bbox_mode"] == "mask"
-    assert uses_mask(cfg.task)
+    assert target_keys(cfg.task.shape_meta["obs"]) == {"mask": "mask"}
 
 
-def test_a_box_template_does_not_use_a_mask():
-    assert not uses_mask(_cfg("umi_pick").task)
+def test_a_box_template_targets_a_box():
+    assert target_keys(_cfg("umi_pick").task.shape_meta["obs"]) == {"bbox": "box"}
 
 
-def test_has_mask_reads_the_zip_index(tmp_path):
-    assert has_mask(_write_zarr(tmp_path / "with.zarr.zip"))
-    assert not has_mask(_write_zarr(tmp_path / "without.zarr.zip", with_mask=False))
+def test_a_target_array_is_read_off_the_zip_index(tmp_path):
+    assert has_target_array(_write_zarr(tmp_path / "with.zarr.zip"), "mask")
+    assert not has_target_array(_write_zarr(tmp_path / "without.zarr.zip", with_mask=False), "mask")
 
 
 def test_mask_training_refuses_a_dataset_without_masks(tmp_path):

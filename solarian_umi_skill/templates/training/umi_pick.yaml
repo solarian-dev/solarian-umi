@@ -1,4 +1,4 @@
-# Point-and-pick training (UMIPnPSkill): a UMI diffusion policy (ViT-L CLIP
+# Point-and-pick training (UMISkill with targets: {bbox: bbox}): a UMI diffusion policy (ViT-L CLIP
 # encoder, UNet) with the target box drawn as a 4th image channel and
 # conditioned on the ViT summary (CLS) token. solarian install copies this to
 # conf/training/umi_pick.yaml once; umi_pick_mask.yaml conditions on the
@@ -9,8 +9,8 @@
 # The datasets need a `bbox` per frame. In a .zarr.zip: run solarian_base
 # scripts/track_zarr.py --backwards --save on the SLAM dataset first. In a
 # .solarian.zip: episodes/*/targets/camera0.rgb.npz, in video pixels.
-# Checkpoints land in models/<job_name>/checkpoints/; point umi_pnp.yaml's
-# server.checkpoint (deployment.pnp_policy_checkpoint) at one.
+# Checkpoints land in models/<job_name>/checkpoints/; point umi_target.yaml's
+# server.checkpoint (deployment.umi_target_policy_checkpoint) at one.
 #
 # Fine-tuning: set training.init_from_ckpt to an existing pick checkpoint.
 # Weights only; optimizer, LR schedule and epochs restart. Train on old + new

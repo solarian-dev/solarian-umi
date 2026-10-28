@@ -20,6 +20,24 @@ module's ``PoseTrajectoryInterpolator`` and the gripper module's
 Which policy and which robot wiring run is the yaml passed as
 ``params["config"]`` (a filename in the project ``conf/``, or a path).
 Copy ``conf/skills/umi.yaml`` to define another policy.
+
+Targets
+-------
+A checkpoint trained with targets (see :mod:`solarian_umi_skill.targets`:
+a box, a point or a mask marking something on ``camera0_rgb``) reads each
+from a calculated field of the camera, named by the yaml's ``targets``
+mapping ``{obs key: field}``, e.g. ``{bbox: bbox}`` to pick what a tracker
+follows or ``{point: target_point}`` to place where a point tracker says. The
+field's data class must match: ``BoundingBoxData``, ``PointData`` or
+``MaskData``. Each is mapped into the policy image the same way the frame is.
+
+Before the operator seeds a tracker a box is all zeros and the policy gets
+the whole frame as its box; a point is all zeros and the policy gets
+``[-1, -1]``; a mask is None and the policy gets an empty mask. Each is the
+dataset's "no target". Starting the skill does not wait for one.
+
+A skill with targets must set ``execution_place`` in its yaml: it has to run
+where its fields are computed, so both confs read one deployment key.
 """
 
 import logging
@@ -32,14 +50,18 @@ import numpy as np
 import yaml
 
 from solarian.core.action import Action, ActionType
+from solarian.core.data import BoundingBoxData, MaskData, PointData
 from solarian.core.execution import ExecutionPlace
 from solarian.core.ai.system1.skill import Skill
 from solarian.core.clock_sync import LatencyEma, synced_time
 from solarian.core.conf_paths import conf_dir, module_config_path, skill_config_path
 from solarian.core.module_yaml import read_module_field
+from solarian.core.observation import Observation
 from solarian.services import PolicyClient
 from solarian.services.launch import server_spec
 from solarian.utils.status_board import StatusBoard
+
+from solarian_umi_skill.targets import target_keys
 
 from solarian_umi_skill.umi.common.interpolation_util import (
     PoseInterpolator,
@@ -58,6 +80,8 @@ from solarian_umi_skill.umi.utils import (
 
 
 logger = logging.getLogger(__name__)
+
+TARGET_DATA = {"box": BoundingBoxData, "point": PointData, "mask": MaskData}
 
 
 def reachable(timestamps: np.ndarray, latency: float, now: float) -> np.ndarray:
@@ -95,6 +119,17 @@ class UMISkill(Skill):
         # constructs the skill to run it passes its own place, which wins.
         if kwargs.get("execution_place") is None and cfg.get("execution_place"):
             self.execution_place = ExecutionPlace(str(cfg["execution_place"]).lower())
+        # Set here, not in setup: setup builds the first observation, and
+        # with it the targets, before returning.
+        self._targets: dict[str, str] = {str(k): str(v) for k, v in (cfg.get("targets") or {}).items()}
+        if self._targets and kwargs.get("execution_place") is None and not cfg.get("execution_place"):
+            raise ValueError(
+                f"{self.params['config']} reads targets from camera fields, so it must set "
+                "execution_place (server or robot), the same place those fields are computed"
+            )
+        #: Per obs key, ``(key, policy-frame target)``: a target changes far
+        #: less often than inference runs, and mapping it costs a full-frame warp.
+        self._target_cache: dict[str, tuple[tuple, np.ndarray]] = {}
 
     @classmethod
     def load_config_file(cls, path: pathlib.Path) -> dict:
@@ -230,6 +265,7 @@ class UMISkill(Skill):
         self.camera_horizon = int(obs_meta["camera0_rgb"]["horizon"])
         self.arm_horizon = int(obs_meta["robot0_eef_pos"]["horizon"])
         self.gripper_horizon = int(obs_meta["robot0_gripper_width"]["horizon"])
+        self._check_targets(obs_meta)
         # Policy RGB size (wo, ho). UMI eval: resize-then-center-crop to this,
         # then paint gripper/mirror masks on the square frame.
         self.obs_image_resolution = get_real_obs_resolution(self.shape_meta)
@@ -305,6 +341,9 @@ class UMISkill(Skill):
         # UMI eval opens to max_gripper_width (0.09 m) before the first
         # inference. umi-slim SET_HOME is fully open (85 mm), inside that
         # range; still open to the policy max so the first obs matches training.
+        # A skill that starts holding an object (place) must not, or it drops it.
+        if not bool(cfg.get("open_gripper_on_start", True)):
+            return
         open_m = self._policy_max_width_m()
         open_time = now + 0.5
         self.dispatch(
@@ -894,15 +933,88 @@ class UMISkill(Skill):
             **extras,
         }
 
+    def _check_targets(self, obs_meta: dict) -> None:
+        """The yaml's ``targets`` read every target the checkpoint observes, from
+        a camera field of the right data class that reaches where this runs."""
+        kinds = target_keys(obs_meta)
+        source = self.params["config"]
+        if set(kinds) != set(self._targets):
+            raise ValueError(
+                f"The checkpoint observes targets {kinds or 'none'}, but {source} maps "
+                f"{sorted(self._targets) or 'none'}; set targets: {{obs key: camera field}} "
+                "for exactly the checkpoint's targets"
+            )
+        camera = self.params["camera"]
+        fields = type(Observation[camera]).get_calculated_fields_spec()
+        for key, field_name in self._targets.items():
+            meta = obs_meta[key]
+            if meta.get("target_rgb_key", "camera0_rgb") != "camera0_rgb":
+                raise ValueError(
+                    f"obs.{key} targets {meta['target_rgb_key']!r}; this skill drives one camera, camera0_rgb")
+            if int(meta.get("horizon", self.camera_horizon)) != self.camera_horizon:
+                raise ValueError(
+                    f"obs.{key} horizon {meta['horizon']} differs from camera0_rgb's "
+                    f"{self.camera_horizon}; one target is sent per frame")
+            if field_name not in fields:
+                raise ValueError(f"Camera '{camera}' has no calculated field '{field_name}' for obs.{key}")
+            field = fields[field_name]
+            data_class = TARGET_DATA[kinds[key]]
+            if field.data_class is not data_class:
+                raise ValueError(
+                    f"obs.{key} is a {kinds[key]} target, which needs a {data_class.__name__} "
+                    f"field, but {camera}.{field_name} is a {field.data_class.__name__}")
+            # A field computed on the relay never reaches the robot's buffers;
+            # one computed on the robot reaches both.
+            if self.execution_place is ExecutionPlace.ROBOT and field.execution_place is not ExecutionPlace.ROBOT:
+                raise ValueError(
+                    f"{source} runs on the robot but {camera}.{field_name} is computed on the "
+                    f"{field.execution_place.value}; set the field's execution_place to robot "
+                    "or run the skill on the server")
+            logger.info("Target obs.%s (%s) from %s.%s (computed on the %s; skill on the %s)",
+                        key, kinds[key], camera, field_name, field.execution_place.value,
+                        self.execution_place.value)
+
     def _camera_obs_extras(self, frames: list, frame_hw: tuple[int, int], remap) -> dict:
-        """Policy inputs read off the camera observations the frames came from.
+        """The targets, read off the camera observations the frames came from.
 
         ``frames`` are the camera ``ModuleObs`` picked for the image horizon,
         in that order; ``frame_hw`` is their capture size and ``remap`` the
-        optical warp applied to them, or None. The base policy needs nothing
-        more.
+        optical warp applied to them, or None.
         """
-        return {}
+        if not self._targets:
+            return {}
+        pipe = self._ensure_policy_pipeline()
+        warp = remap.apply if remap is not None else None
+        kinds = target_keys(self.shape_meta["obs"])
+        extras = {}
+        for key, field_name in self._targets.items():
+            kind = kinds[key]
+            mapped = []
+            for obs in frames:
+                data = obs[field_name]
+                if kind == "mask":
+                    # A tracker result keeps the stamp of the frame it came
+                    # from, so an unchanged stamp is an unchanged mask.
+                    cache_key = (float(data.timestamp), frame_hw)
+                else:
+                    cache_key = (tuple(np.asarray(data.value).reshape(-1).tolist()), frame_hw)
+                cached = self._target_cache.get(key)
+                if cached is None or cached[0] != cache_key:
+                    if kind == "mask":
+                        target = pipe.target_mask(data.value, frame_hw, warp)
+                    elif kind == "box":
+                        target = pipe.bbox(np.asarray(data.value).reshape(4), frame_hw, warp)
+                    else:
+                        target = pipe.point(data.value, frame_hw, warp)
+                    cached = self._target_cache[key] = (cache_key, target)
+                mapped.append(cached[1])
+            extras[key] = np.stack(mapped).astype(np.float32)
+            if kind == "mask":
+                extras[key] = extras[key][:, None]
+                StatusBoard.set(f"UMI target {key} px", int(mapped[-1].sum()))
+            else:
+                StatusBoard.set(f"UMI target {key}", np.round(mapped[-1], 1).tolist())
+        return extras
 
     # ------------------------------------------------------------------
     # Action handling

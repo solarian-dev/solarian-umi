@@ -82,6 +82,19 @@ class PolicyFrame:
         out[invalid] = bbox[invalid]
         return out
 
+    def point(self, point: np.ndarray) -> np.ndarray:
+        """Source-pixel points ``(..., 2)`` in output pixels.
+
+        A negative point is the "no point" marker; one the crop cuts off becomes it.
+        """
+        x0, y0, cw, ch = crop_window(self.in_res, self.out_res)
+        ow, oh = self.out_res
+        point = np.asarray(point, dtype=np.float32)
+        out = (point - np.array([x0, y0], dtype=np.float32)) * np.array([ow / cw, oh / ch], dtype=np.float32)
+        outside = (point < 0).any(axis=-1) | (out < 0).any(axis=-1) | (out[..., 0] >= ow) | (out[..., 1] >= oh)
+        out[outside] = -1
+        return out
+
     def mask(self, mask: np.ndarray) -> np.ndarray:
         """A source-resolution ``(H, W)`` 0/1 mask, cropped and resized like the image."""
         x0, y0, cw, ch = crop_window(self.in_res, self.out_res)

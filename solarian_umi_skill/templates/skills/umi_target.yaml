@@ -1,27 +1,32 @@
-# UMIPnPSkill (point and pick) configuration.
+# UMISkill configuration for a policy conditioned on targets: pick what a
+# tracker follows (a box or mask target), place where a point tracker says (a
+# point target), or both.
 #
-# Everything UMISkill reads (conf/skills/umi.yaml) plus the target. The checkpoint
-# must be trained with a target: obs.bbox bbox_mode=mask_channel, or obs.mask
-# (`target: mask`).
-#   UMIPnPSkill(params={"config": "umi_pnp.yaml"})
+# Everything conf/skills/umi.yaml reads, plus the targets.
+#   UMISkill(params={"config": "umi_target.yaml"})
 # Serve its checkpoint with:
-#   solarian run-service umi_pnp
+#   solarian run-service umi_target
 # Any key here can be overridden by the same key in the skill's params.
 
 # ---- Placement -------------------------------------------------------
-# `server` (the relay) or `robot`. Use the same deployment key as the bbox
-# field's `execution_place`, so the skill and the tracker move together: a
-# robot-hosted skill cannot read a box computed on the relay.
-execution_place: ${deployment.pnp_execution_place}
+# `server` (the relay) or `robot`; required with targets. Use the same
+# deployment key as the target fields' `execution_place`, so the skill and the
+# tracker move together: a robot-hosted skill cannot read a field computed on
+# the relay.
+execution_place: ${deployment.umi_target_execution_place}
 
-# The camera's calculated field holding the target, in capture pixels: a
-# BoundingBoxData (e.g. `bbox`) for a bbox checkpoint, a MaskData (e.g.
-# `target_mask`) for one trained with `target: mask`. The controller starts
-# the tracker on this field.
-target_field: bbox
+# Each target the checkpoint observes (shape_meta obs entries with
+# bbox_mode/point_mode mask_channel, or type mask), mapped to the camera's
+# calculated field holding it in capture pixels:
+#   box   -> BoundingBoxData, e.g. {bbox: bbox}          (bbox_tracker)
+#   mask  -> MaskData,        e.g. {mask: target_mask}   (bbox_tracker, mask output)
+#   point -> PointData,       e.g. {point: target_point} (point_tracker)
+# The controller seeds the tracker behind each field.
+targets:
+  bbox: bbox
 
 # ---- Policy server ---------------------------------------------------
-policy_server_url: ${deployment.pnp_policy_server_url}
+policy_server_url: ${deployment.umi_target_policy_server_url}
 # The endpoint's bearer token; null for a server that asks for none.
 policy_server_token: ${oc.select:deployment.solarian_base_endpoint_token,null}
 
@@ -29,8 +34,8 @@ policy_server_token: ${oc.select:deployment.solarian_base_endpoint_token,null}
 server:
   service: umi-policy
   managed: false
-  # The trained point-and-pick checkpoint, as a path on the inference host.
-  checkpoint: ${oc.select:deployment.pnp_policy_checkpoint,null}
+  # The trained checkpoint, as a path on the inference host.
+  checkpoint: ${oc.select:deployment.umi_target_policy_checkpoint,null}
   host: 127.0.0.1
   port: 8002
 
@@ -64,6 +69,9 @@ gripper_calibration:
   policy_max_width_m: 0.09
   # over_grip: -6.0
   over_grip: -4.0
+# Open to policy_max_width_m before the first inference, as UMI eval does.
+# Set false for a skill that starts holding an object (e.g. place).
+open_gripper_on_start: true
 
 # ---- Motion control --------------------------------------------------
 # Cartesian speed caps live on the arm module (right_arm.yaml max_speed), which

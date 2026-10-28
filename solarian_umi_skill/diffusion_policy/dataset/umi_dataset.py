@@ -30,6 +30,7 @@ from solarian_umi_skill.diffusion_policy.dataset.base_dataset import BaseDataset
 from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
     is_session, load_session_replay_buffer, session_stamp)
 from solarian_umi_skill.diffusion_policy.model.common.normalizer import LinearNormalizer
+from solarian_umi_skill.targets import target_kind
 from solarian_umi_skill.umi.common.pose_util import pose_to_mat, mat_to_pose10d
 
 register_codecs()
@@ -519,7 +520,10 @@ class UmiDataset(BaseDataset):
         for key in self.lowdim_keys:
             stat = array_to_stats(data_cache[key])
 
-            if key.endswith('pos') or 'pos_wrt' in key:
+            if target_kind(self.shape_meta['obs'][key]) is not None:
+                # Pixel coordinates the encoder rasterizes into a channel.
+                this_normalizer = get_identity_normalizer_from_stat(stat)
+            elif key.endswith('pos') or 'pos_wrt' in key:
                 this_normalizer = get_range_normalizer_from_stat(stat)
             elif key.endswith('pos_abs'):
                 this_normalizer = get_range_normalizer_from_stat(stat)
@@ -528,22 +532,9 @@ class UmiDataset(BaseDataset):
             elif key.endswith('gripper_width'):
                 this_normalizer = get_range_normalizer_from_stat(stat)
             elif key.endswith('bbox'):
-                # Pixel-space bbox [x0, y0, x1, y1]. Two modes:
-                #   * low_dim:      map observed range -> [-1, 1] (the bbox is
-                #                   concatenated as 4 scalars onto the obs-
-                #                   encoder feature vector, so a [-1, 1] scale
-                #                   matches the proprio features).
-                #   * mask_channel: keep raw pixel coords (identity) because
-                #                   the encoder uses them to rasterize a binary
-                #                   mask in pixel space. Normalizing to [-1, 1]
-                #                   would force the encoder to invert the
-                #                   normalization before rasterizing.
-                bbox_attr = self.shape_meta['obs'].get(key, {})
-                bbox_mode = bbox_attr.get('bbox_mode', 'low_dim')
-                if bbox_mode == 'mask_channel':
-                    this_normalizer = get_identity_normalizer_from_stat(stat)
-                else:
-                    this_normalizer = get_range_normalizer_from_stat(stat)
+                # bbox_mode: low_dim, 4 scalars concatenated onto the encoder
+                # feature, scaled to [-1, 1] like the proprio features.
+                this_normalizer = get_range_normalizer_from_stat(stat)
             else:
                 raise RuntimeError('unsupported')
             normalizer[key] = this_normalizer

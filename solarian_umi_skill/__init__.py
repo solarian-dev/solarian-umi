@@ -5,11 +5,11 @@ passed as ``params["config"]``. ``solarian install`` copies
 ``templates/skills/umi.yaml`` to ``conf/skills/umi.yaml`` the first time; copy that file
 to define another policy.
 
-``UMIPnPSkill`` is the point-and-pick variant: the policy also takes the
-camera's tracked target box (``templates/skills/umi_pnp.yaml``).
+A policy trained with targets (a box, point or mask on the wrist image) reads
+them from camera fields named by the yaml's ``targets``
+(``templates/skills/umi_target.yaml``).
 """
 
-from solarian_umi_skill.pnp_skill import UMIPnPSkill
 from solarian_umi_skill.skill import UMISkill
 
-__all__ = ["UMIPnPSkill", "UMISkill"]
+__all__ = ["UMISkill"]

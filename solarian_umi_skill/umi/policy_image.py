@@ -13,6 +13,9 @@ from solarian_umi_skill.umi.common.cv_util import draw_predefined_mask
 from solarian_umi_skill.umi.common.cv2_util import get_image_transform, letterbox_to_square
 
 DEFAULT_OUTPUT_RES = (224, 224)
+#: Capture pixels. Large enough to survive the downscale to the policy frame,
+#: small enough that the crop edge rarely cuts it and shifts the centroid.
+POINT_DISK_RADIUS_PX = 6
 
 
 class PolicyImagePipeline:
@@ -118,6 +121,34 @@ class PolicyImagePipeline:
         if bw <= 0 or bh <= 0:
             return full
         return np.array([x, y, x + bw, y + bh], dtype=np.float32)
+
+    def point(self, point, frame_hw: tuple[int, int], warp=None) -> np.ndarray:
+        """A capture-pixel point as the policy sees it: ``[x, y]`` float32.
+
+        ``point`` is a ``PointData`` value ``(x, y, visibility)``; only ``x, y``
+        are read. A small disk around it goes through the same ``warp`` and
+        :meth:`resize` as the frame and the point is the centroid of what
+        arrives. All zeros (no point yet), or a point the crop removes, is
+        ``[-1, -1]``: the dataset's "no point".
+        """
+        import cv2
+
+        none = np.array([-1.0, -1.0], dtype=np.float32)
+        raw = np.asarray(point, dtype=np.float64).reshape(-1)
+        h, w = frame_hw
+        x, y = raw[0], raw[1]
+        if not raw.any() or not (0 <= x < w and 0 <= y < h):
+            return none
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        cv2.circle(img, (int(round(x)), int(round(y))), POINT_DISK_RADIUS_PX, (255, 255, 255), -1)
+        if warp is not None:
+            img = warp(img)
+        weight = self.resize(img[None])[0][..., 0].astype(np.float64)
+        total = weight.sum()
+        if total <= 0:
+            return none
+        ys, xs = np.indices(weight.shape)
+        return np.array([(xs * weight).sum() / total, (ys * weight).sum() / total], dtype=np.float32)
 
     def target_mask(self, mask, frame_hw: tuple[int, int], warp=None) -> np.ndarray:
         """A capture-pixel target mask as the policy sees it: ``(oh, ow)`` float32 0/1.

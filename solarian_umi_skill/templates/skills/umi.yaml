@@ -55,6 +55,9 @@ gripper_calibration:
   policy_max_width_m: 0.09
   # over_grip: -6.0
   over_grip: -4.0
+# Open to policy_max_width_m before the first inference, as UMI eval does.
+# Set false for a skill that starts holding an object (e.g. place).
+open_gripper_on_start: true
 
 # ---- Motion control --------------------------------------------------
 # Cartesian speed caps live on the arm module (right_arm.yaml max_speed), which

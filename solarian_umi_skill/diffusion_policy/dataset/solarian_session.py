@@ -12,7 +12,7 @@ resolution. Two UMI-specific sidecars sit beside them::
         episode.parquet          obs.robot0.{x,y,z,rx,ry,rz,gripper_width}
         video/camera0.rgb.mp4
         tags/camera0.rgb.json    per frame, {tag_id: 4x2 corners}, inpainted at load
-        targets/camera0.rgb.npz  optional: bbox (T, 4+) and/or mask in video pixels
+        targets/camera0.rgb.npz  optional: bbox (T, 4+), point (T, 2), mask, in video pixels
 
 The same layout unzipped, as a directory, reads the same way. Training decodes
 each episode once into the same replay buffer a ``.zarr.zip`` gives, at the
@@ -60,6 +60,10 @@ SUFFIX = ".solarian.zip"
 PROGRESS_INTERVAL_S = 10.0
 TAGS_DIR = "tags"
 TARGETS_DIR = "targets"
+#: Per-frame vectors in source pixels, mapped to policy pixels by
+#: :class:`PolicyFrame`. Training observes each under its own key, so a
+#: shape_meta target is named after its array.
+LOW_DIM_TARGETS = ("bbox", "point")
 
 #: Gripper TCP position (m) and axis-angle rotation (rad) in the SLAM tag frame.
 POS_FIELDS = ("x", "y", "z")
@@ -259,16 +263,15 @@ def read_tags(archive: SessionArchive, member: str) -> list[list[np.ndarray]]:
 
 
 def write_targets(path: str | Path, episode: int, camera: str = camera_name(0),
-                  bbox: np.ndarray | None = None, mask: np.ndarray | None = None) -> None:
-    """Add per-frame ``bbox`` ``(T, 4+)`` and/or 0/1 ``mask`` ``(T, H, W)`` to a session.
+                  mask: np.ndarray | None = None, **arrays: np.ndarray) -> None:
+    """Add per-frame targets to a session: a 0/1 ``mask`` ``(T, H, W)`` and/or
+    float arrays such as ``bbox`` ``(T, 4+)`` and ``point`` ``(T, 2)``.
 
     ``path`` is a ``.solarian.zip`` (the member is appended; one that exists
     already is refused, since a zip cannot replace a member in place) or a
     session directory.
     """
-    arrays = {}
-    if bbox is not None:
-        arrays["bbox"] = np.asarray(bbox, dtype=np.float32)
+    arrays = {key: np.asarray(value, dtype=np.float32) for key, value in arrays.items()}
     if mask is not None:
         mask = np.asarray(mask, dtype=np.uint8)
         # Bit-packed: a full-resolution binary mask is 8x smaller before zlib.
@@ -292,28 +295,28 @@ def read_targets(archive: SessionArchive, member: str) -> dict[str, np.ndarray]:
     if not archive.exists(member):
         return {}
     with archive.open(member) as fh, np.load(io.BytesIO(fh.read())) as npz:
-        out = {}
-        if "bbox" in npz:
-            out["bbox"] = npz["bbox"]
+        out = {key: npz[key] for key in LOW_DIM_TARGETS if key in npz}
         if "mask" in npz:
             width = int(npz["mask_width"])
             out["mask"] = np.unpackbits(npz["mask"], axis=-1, count=width)
         return out
 
 
-def has_target(path: str | Path, key: str, camera: str = camera_name(0)) -> bool:
-    """Whether every episode carries ``key`` (``bbox`` or ``mask``) for ``camera``."""
+def episodes_missing_target(path: str | Path, key: str, camera: str = camera_name(0)) -> list[str]:
+    """The episodes without ``key`` (``bbox``, ``point`` or ``mask``) for ``camera``."""
     with SessionArchive(path) as archive:
-        episodes = archive.episodes()
-        if not episodes:
+        return [
+            episode for episode in archive.episodes()
+            if not archive.exists(member := targets_member(episode, camera)) or key not in archive.npz_keys(member)
+        ]
+
+
+def has_target(path: str | Path, key: str, camera: str = camera_name(0)) -> bool:
+    """Whether every episode carries ``key`` for ``camera``."""
+    with SessionArchive(path) as archive:
+        if not archive.episodes():
             return False
-        for episode in episodes:
-            member = targets_member(episode, camera)
-            if not archive.exists(member):
-                return False
-            if key not in archive.npz_keys(member):
-                return False
-        return True
+    return not episodes_missing_target(path, key, camera)
 
 
 def load_session_replay_buffer(
@@ -326,8 +329,8 @@ def load_session_replay_buffer(
 ) -> ReplayBuffer:
     """Decode the session at ``path`` into a replay buffer at ``out_res`` ``(w, h)``.
 
-    Holds the keys ``07_generate_replay_buffer.py`` writes, plus ``bbox`` and
-    ``mask`` when every episode has them for ``camera0.rgb``.
+    Holds the keys ``07_generate_replay_buffer.py`` writes, plus ``bbox``,
+    ``point`` and ``mask`` when every episode has them for ``camera0.rgb``.
     """
     with SessionArchive(path) as archive:
         meta = json.loads(archive.read_text(SESSION_FILE))
@@ -382,9 +385,10 @@ def load_session_replay_buffer(
               f"at {ow}x{oh} on {workers} threads", flush=True)
         started = time.monotonic()
         members = [targets_member(e, cameras[0]) for e in episodes]
-        # bbox / mask in policy pixels, only when every episode has them.
-        target_keys = [key for key in ("bbox", "mask")
+        # Targets in policy pixels, only when every episode has them.
+        target_keys = [key for key in (*LOW_DIM_TARGETS, "mask")
                        if all(archive.exists(m) and key in archive.npz_keys(m) for m in members)]
+        low_dim_keys = [key for key in target_keys if key in LOW_DIM_TARGETS]
         if "mask" in target_keys:
             replay_buffer.data.require_dataset(
                 name="mask",
@@ -405,14 +409,15 @@ def load_session_replay_buffer(
             thread_archives.append(local.archive)
         return local.archive
 
-    def load_targets(member: str, start: int) -> np.ndarray | None:
+    def load_targets(member: str, start: int) -> dict[str, np.ndarray]:
         # Per episode: unpacked, a session's full-resolution masks are hundreds of GB.
         targets = read_targets(thread_archive(), member)
         if "mask" in target_keys:
             masks = replay_buffer.data["mask"]
             for k, mask in enumerate(targets["mask"]):
                 masks[start + k] = policy_frame.mask(mask)
-        return policy_frame.box(targets["bbox"]) if "bbox" in target_keys else None
+        to_policy = {"bbox": policy_frame.box, "point": policy_frame.point}
+        return {key: to_policy[key](targets[key]) for key in low_dim_keys}
 
     def decode(episode: str, cam_id: int, start: int, n: int) -> None:
         camera = cameras[cam_id]
@@ -448,11 +453,12 @@ def load_session_replay_buffer(
             if time.monotonic() - printed >= PROGRESS_INTERVAL_S and done < len(futures):
                 printed = time.monotonic()
                 print(f"Decoding {name}: {done}/{len(futures)} videos", flush=True)
-        boxes = [future.result() for future in target_futures]
+        targets = [future.result() for future in target_futures]
     for task_archive in thread_archives:
         task_archive.close()
-    if "bbox" in target_keys:
-        replay_buffer.data.array(name="bbox", data=np.concatenate(boxes), compressor=None)
+    for key in low_dim_keys:
+        replay_buffer.data.array(name=key, data=np.concatenate([t[key] for t in targets]),
+                                 compressor=None)
     print(f"Decoded {name} in {time.monotonic() - started:.0f}s", flush=True)
     return replay_buffer
 

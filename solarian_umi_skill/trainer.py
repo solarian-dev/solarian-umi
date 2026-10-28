@@ -11,11 +11,13 @@ into this package.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from solarian.core.ai.system1.policy_trainer import ModalSpec, PolicyTrainer
+from solarian_umi_skill.targets import target_keys
 
 SOLARIAN_KEYS = {"trainer", "job_name", "output_dir", "modal"}
 
@@ -124,22 +126,33 @@ def is_dataset(dataset_path: str) -> bool:
     return os.path.isfile(os.path.expanduser(dataset_path)) or is_session(dataset_path)
 
 
-def has_mask(dataset_path: str) -> bool:
-    """Whether a dataset has a target mask for every frame, without loading it."""
+def has_target_array(dataset_path: str, key: str) -> bool:
+    """Whether a dataset has target ``key`` for every frame, without loading it."""
     from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
         has_target, is_session)
 
     if is_session(dataset_path):
-        return has_target(dataset_path, "mask")
+        return has_target(dataset_path, key)
     import zipfile
 
     with zipfile.ZipFile(os.path.expanduser(dataset_path)) as zf:
-        return "data/mask/.zarray" in zf.namelist()
+        return f"data/{key}/.zarray" in zf.namelist()
 
 
-def uses_mask(task: UmiTask) -> bool:
-    """Whether the task observes a target mask."""
-    return any(entry.get("type") == "mask" for entry in task.shape_meta["obs"].values())
+def _missing_target_hint(key: str, kind: str, dataset_path: str) -> str:
+    from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
+        episodes_missing_target, is_session)
+
+    if is_session(dataset_path):
+        op = "track_point" if kind == "point" else "track"
+        missing = [Path(episode).name for episode in episodes_missing_target(dataset_path, key)]
+        shown = ", ".join(missing[:10]) + (f" and {len(missing) - 10} more" if len(missing) > 10 else "")
+        return (f"every episode's targets/camera0.rgb.npz needs a {key!r} array, and episodes {shown} "
+                f"have none; annotate them with the {op} op (or solarian_session.write_targets), "
+                f"or delete them")
+    if kind == "mask":
+        return "it needs a data/mask array; add it with solarian_base scripts/zarr_add_masks.py"
+    return f"it needs a data/{key} array"
 
 
 class UmiTrainer(PolicyTrainer):
@@ -202,21 +215,11 @@ class UmiTrainer(PolicyTrainer):
         for path in datasets:
             if not is_dataset(path):
                 raise FileNotFoundError(f"task.dataset_mix: dataset not found: {path}")
-        if uses_mask(task):
-            from solarian_umi_skill.diffusion_policy.dataset.solarian_session import is_session
-
+        for key, kind in target_keys(task.shape_meta["obs"]).items():
             for path in datasets + [p for p in [val_dataset] if p]:
-                if not has_mask(path):
-                    if is_session(path):
-                        raise ValueError(
-                            f"{cfg.job_name} observes a mask, which needs one in every "
-                            f"episode's targets/camera0.rgb.npz in {path}; write them with "
-                            "solarian_session.write_targets"
-                        )
-                    raise ValueError(
-                        f"{cfg.job_name} observes a mask, which needs a data/mask array "
-                        f"in {path}; add it with solarian_base scripts/zarr_add_masks.py"
-                    )
+                if not has_target_array(path, key):
+                    raise ValueError(f"{cfg.job_name} observes the {kind} target {key!r}, which "
+                                     f"{path} lacks: {_missing_target_hint(key, kind, path)}")
 
     def train(self) -> None:
         from solarian_umi_skill import training

@@ -38,8 +38,8 @@ def _load_without(key: str, name: str = "umi"):
     return load_train_config(cfg)
 
 
-def test_the_plugin_ships_the_three_training_templates():
-    assert TEMPLATES == ["umi", "umi_pick", "umi_pick_mask"]
+def test_the_plugin_ships_the_training_templates():
+    assert TEMPLATES == ["umi", "umi_pick", "umi_pick_mask", "umi_place"]
 
 
 @pytest.mark.parametrize("name", TEMPLATES)

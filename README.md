@@ -10,7 +10,7 @@ From a Solarian project:
 solarian install solarian-umi-skill
 ```
 
-That installs the package into the current Python environment, adds it to `pyproject.toml`, and copies every file under `templates/` into the same folder of `conf/` when it is not already there: `conf/skills/umi.yaml`, `conf/skills/umi_pnp.yaml`, and the training files `conf/training/umi.yaml`, `umi_pick.yaml` and `umi_pick_mask.yaml`. An unpublished checkout installs the same way from a path:
+That installs the package into the current Python environment, adds it to `pyproject.toml`, and copies every file under `templates/` into the same folder of `conf/` when it is not already there: `conf/skills/umi.yaml`, `conf/skills/umi_target.yaml`, and the training files `conf/training/umi.yaml`, `umi_pick.yaml`, `umi_pick_mask.yaml` and `umi_place.yaml`. An unpublished checkout installs the same way from a path:
 
 ```bash
 solarian install plugins/solarian-umi-skill
@@ -43,22 +43,26 @@ The skill reaches it at `policy_server_url`, sending `policy_server_token` when
 the server asks for one (a policy hosted on Solarian Base). With
 `server.managed: true` the skill launches the server itself.
 
-## Point and pick
+## Targets: pick and place
 
-`UMIPnPSkill` runs a UMI checkpoint trained with a target, a fourth input channel over `camera0_rgb`: a box drawn as a filled rectangle (`obs.bbox` with `bbox_mode: mask_channel`) or the object's mask (`obs.mask`, trained with `conf/training/umi_pick_mask.yaml`). Its config is `conf/skills/umi_pnp.yaml`, the same keys as `conf/skills/umi.yaml` plus:
+A checkpoint can be trained with targets, each an extra input channel over `camera0_rgb` (see [`targets.py`](solarian_umi_skill/targets.py)):
 
-- `execution_place`: `server` or `robot`, from a required deployment key (`pnp_execution_place` in the template).
-- `target_field`: the camera's calculated field holding the target in capture pixels, default `bbox`. A `BoundingBoxData` for a box checkpoint, a `MaskData` (from `Sam2MaskProcessor`) for a mask checkpoint; `setup` refuses a mismatch.
+- a box, drawn as a filled rectangle (`obs.bbox`, `bbox_mode: mask_channel`): pick what a SAM 2 tracker boxes;
+- a mask, the object's segmentation (`obs.mask`, `type: mask`): pick a thin or diagonal object;
+- a point, drawn as a `point_box_px` square (`obs.point`, `point_mode: mask_channel`): place the held object where a TAPNext point tracker says.
+
+The same `UMISkill` runs them. Its yaml adds:
+
+- `targets`: each target the checkpoint observes, mapped to the camera's calculated field holding it in capture pixels, e.g. `{bbox: bbox}`, `{mask: target_mask}` or `{point: target_point}`. The field must be a `BoundingBoxData`, `MaskData` or `PointData` to match; `setup` refuses a missing, extra or mismatched one.
+- `execution_place`: `server` or `robot`, required with targets, from a deployment key (`umi_target_execution_place` in the template `conf/skills/umi_target.yaml`).
 
 ```python
-from solarian_umi_skill import UMIPnPSkill
-
-self.start_skill(UMIPnPSkill(params={"config": "umi_pnp.yaml"}))
+self.start_skill(UMISkill(params={"config": "place_object.yaml"}))
 ```
 
-The box usually comes from a tracker service such as `solarian-sam2-tracker`, seeded when the operator clicks the object (`self.start_service(camera, "bbox", point=...)`). Before a target is set the field is all zeros and the policy gets the whole frame as its box, the placeholder it was trained with; a mask field is None and the policy gets an empty mask. The skill maps the box or mask through the same remap, resize and crop as the frame, and clears a mask where the gripper and mirrors are painted black.
+A box or mask usually comes from `solarian-sam2`, a point from `solarian-tapnext`, each seeded when the operator clicks the wrist image (`self.start_service(camera, "target_point", point=...)`). Before then a box is all zeros and the policy gets the whole frame as its box, a mask is None and the policy gets an empty mask, and a point is all zeros and the policy gets `[-1, -1]`: each the dataset's "no target". The skill maps every target through the same remap, resize and crop as the frame; a point that the crop removes becomes `[-1, -1]`, and a mask is cleared where the gripper and mirrors are painted black.
 
-On the server, the skill sits beside the tracker and the robot only captures and executes. On the robot, the bbox field must also be computed on the robot (`execution_place: robot` in its conf); `setup` refuses a robot-hosted skill reading a server-computed box, because that field never reaches the robot. Point both confs at one deployment key so they cannot disagree.
+On the server, the skill sits beside the trackers and the robot only captures and executes. On the robot, the target fields must also be computed on the robot (`execution_place: robot` in their confs); `setup` refuses a robot-hosted skill reading a server-computed field, because that field never reaches the robot. Point the skill and the trackers at one deployment key so they cannot disagree.
 
 ## Train
 
@@ -71,11 +75,12 @@ A training run is one file, `conf/training/<name>.yaml`. It is the UMI training 
 
 Everything else is UMI's: the model (`policy`), `optimizer`, `training` (epochs, LR schedule, checkpoint cadence, `init_from_ckpt`, `resume`), `dataloader`, `logging`, `checkpoint` and the `task` with its datasets. Nothing is inherited from another file and no value is filled in by code, so the file shows every value the run uses. `${eval:...}` and `${parse_dataset_field:...}` work as in UMI: the trainer registers them before the file resolves. Every top-level key is required and an unknown one is rejected, so a typo fails before training starts.
 
-`solarian install` seeds three files, copied from `templates/training/`:
+`solarian install` seeds four files, copied from `templates/training/`:
 
 - `conf/training/umi.yaml`: camera and proprioception only, no target; the UMI `train_diffusion_unet_timm_umi_cup_wild` run.
 - `conf/training/umi_pick.yaml`: a ViT-L CLIP encoder and UNet conditioned on a target box drawn as a 4th image channel, on the CLS token; the UMI `train_diffusion_unet_timm_umi_pick_lego_pile_bbox` run.
 - `conf/training/umi_pick_mask.yaml`: as `umi_pick`, conditioned on the object's mask through the CLS token and `box_pool`.
+- `conf/training/umi_place.yaml`: as `umi_pick_mask`, conditioned on a place point instead, from the `track_point` dataset op.
 
 Copy one per run and change `job_name`, `task.dataset_mix` and whatever else the run changes; `trainer` stays `umi`.
 
@@ -107,7 +112,7 @@ self.start_skill(UMISkill(params={"config": "cup_arrange.yaml"}))
 - `training.resume`: continue an interrupted run from `<output_dir>/checkpoints/latest.ckpt` at its next epoch. `training.num_epochs` stays the run's total.
 - `task.samples_per_epoch`: samples drawn per epoch, by dataset weight. An epoch is `task.samples_per_epoch / batch_size` steps and only sets how often validation, sampling and checkpoints run; `training.num_epochs` of them is the run. null: as many as the datasets hold together.
 - `policy.obs_encoder.feature_aggregation`: null conditions on the ViT summary (CLS) token. `box_pool` also adds the mean of the patch tokens under the target (weighted by the mask's shape for a mask target) and its bounding corners, which widens the conditioning. A CLS checkpoint in `training.init_from_ckpt` still initializes it: its conditioning weights move to the CLS and low-dim positions and the new columns start at zero, so the widened network computes the same function as the checkpoint until training moves those weights.
-- The target in `task.shape_meta.obs`: `umi_pick` observes the dataset's `bbox` array, drawn as a filled rectangle. `umi_pick_mask` (with `bbox_mode: mask`) observes its `mask` array, the object's segmentation, which marks a thin or diagonal object such as a cable where a box covers mostly background. Add the array with solarian_base `scripts/zarr_add_masks.py`; training refuses a dataset without one. Both enter the ViT as the same 4th channel, so a box checkpoint can start a mask run. `UMIPnPSkill` reads the camera's `target_mask` field for a mask checkpoint.
+- The targets in `task.shape_meta.obs`: `umi_pick` observes the dataset's `bbox` array, drawn as a filled rectangle. `umi_pick_mask` (with `bbox_mode: mask`) observes its `mask` array, the object's segmentation, which marks a thin or diagonal object such as a cable where a box covers mostly background. `umi_place` observes its `point` array, drawn as a `point_box_px` square; negative means no point. Each entry reads the dataset array of its own name: in a `.solarian.zip` the `track` op writes `bbox` and `mask` and the `track_point` op writes `point`, into `episodes/*/targets/camera0.rgb.npz`; for a `.zarr.zip`, add a mask with solarian_base `scripts/zarr_add_masks.py`. Training refuses a dataset without every target it observes. Each target is one more ViT input channel, in shape_meta order, so a policy can observe a pick box and a place point together. A checkpoint with fewer targets starts one with more: `training.init_from_ckpt` pads the patch embedding and the `box_pool` conditioning with zeros for the new ones, so the widened network starts as the checkpoint.
 
 Any key is overridden on the command line. Values that contain `=` or start with `~` need inner quotes:
 

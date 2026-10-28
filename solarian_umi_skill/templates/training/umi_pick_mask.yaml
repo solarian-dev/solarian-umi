@@ -1,5 +1,6 @@
-# Point-and-pick training (UMIPnPSkill) conditioned on the object's
-# segmentation instead of its box: better for thin or diagonal objects. The
+# Point-and-pick training (UMISkill with targets: {mask: target_mask})
+# conditioned on the object's segmentation instead of its box: better for
+# thin or diagonal objects. The
 # mask enters the ViT as the same 4th channel as the box, so a umi_pick
 # checkpoint starts it (training.init_from_ckpt). Conditioned on the CLS
 # token and box_pool. solarian install copies this to

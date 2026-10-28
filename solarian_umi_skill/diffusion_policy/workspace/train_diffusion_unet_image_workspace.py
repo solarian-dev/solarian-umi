@@ -86,14 +86,15 @@ def _parl_metrics(policy) -> dict:
 
 @torch.no_grad()
 def _bbox_mask_weight_metrics(policy) -> dict:
-    """Snapshot of patch_embed.proj weight norms for bbox-mask-channel rgb keys.
+    """Snapshot of patch_embed.proj weight norms for target-channel rgb keys.
 
-    Returns one block of metrics per rgb key that has a bbox mask routed to
-    it (see TimmObsEncoder.bbox_mask_map). For each key we log:
+    Returns one block of metrics per rgb key that has targets routed to it
+    (see TimmObsEncoder.bbox_mask_map). For each key we log:
 
-      * ``bbox_mask/<rgb_key>/w_norm_mask_ch``: L2 norm of the 4th input-
-        channel slice of patch_embed.proj. Exactly 0 at training step 0
-        (zero-init); growing > 0 proves the optimizer is using the mask.
+      * ``bbox_mask/<rgb_key>/w_norm_mask_ch``: L2 norm of the first target
+        channel's slice of patch_embed.proj (``w_norm_<target>`` for every
+        target). Exactly 0 at training step 0 (zero-init); growing > 0
+        proves the optimizer is using the target.
       * ``bbox_mask/<rgb_key>/w_norm_rgb_mean``: mean L2 norm of the three
         RGB input-channel slices. Stable reference scale to compare against.
       * ``bbox_mask/<rgb_key>/w_ratio``: ratio of the two (mask norm /
@@ -112,7 +113,7 @@ def _bbox_mask_weight_metrics(policy) -> dict:
         return {}
 
     metrics = {}
-    for rgb_key in mask_map.keys():
+    for rgb_key, target_keys in mask_map.items():
         # nn.ModuleDict doesn't expose .get(); use __contains__ + []
         if rgb_key not in encoder.key_model_map:
             continue
@@ -120,7 +121,7 @@ def _bbox_mask_weight_metrics(policy) -> dict:
         if not hasattr(model, 'patch_embed') \
                 or not hasattr(model.patch_embed, 'proj'):
             continue
-        weight = model.patch_embed.proj.weight  # (out_ch, in_ch=4, k, k)
+        weight = model.patch_embed.proj.weight  # (out_ch, 3 + targets, k, k)
         if weight.shape[1] < 4:
             continue
         rgb_norms = [weight[:, c].norm().item() for c in range(3)]
@@ -131,6 +132,9 @@ def _bbox_mask_weight_metrics(policy) -> dict:
         metrics[f'{prefix}/w_norm_mask_ch'] = mask_norm
         metrics[f'{prefix}/w_norm_rgb_mean'] = rgb_mean
         metrics[f'{prefix}/w_ratio'] = ratio
+        if len(target_keys) > 1:
+            for c, target_key in enumerate(target_keys, start=3):
+                metrics[f'{prefix}/w_norm_{target_key}'] = weight[:, c].norm().item()
     return metrics
 
 
@@ -773,7 +777,8 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         from solarian_umi_skill.diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
         from solarian_umi_skill.diffusion_policy.model.diffusion.ema_model import EMAModel
         from solarian_umi_skill.diffusion_policy.model.common.lr_scheduler import get_scheduler
-        from solarian_umi_skill.diffusion_policy.model.vision.timm_obs_encoder import widen_cond_for_box_pool
+        from solarian_umi_skill.diffusion_policy.model.vision.timm_obs_encoder import (
+            widen_cond_for_box_pool, widen_patch_embed)
         from accelerate import Accelerator, DistributedDataParallelKwargs
         import dill
 
@@ -854,15 +859,21 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 # so a strict load of the BC ckpt's `model` and
                 # `ema_model` state_dicts produces no key mismatch.
                 payload = torch.load(init_path.open('rb'), pickle_module=dill)
-                if self.model.obs_encoder.feature_aggregation == 'box_pool':
-                    target = self.model.state_dict()
-                    for key in ('model', 'ema_model'):
-                        if key in payload['state_dicts']:
-                            widened = widen_cond_for_box_pool(
-                                payload['state_dicts'][key], self.model.obs_encoder, target)
-                            accelerator.print(
-                                f"box_pool: widened {widened} {key} conditioning weights "
-                                f"of {init_path.name}")
+                target = self.model.state_dict()
+                for key in ('model', 'ema_model'):
+                    if key not in payload['state_dicts']:
+                        continue
+                    padded = widen_patch_embed(payload['state_dicts'][key], target)
+                    if padded:
+                        accelerator.print(
+                            f"targets: zero-padded {padded} {key} patch embeddings "
+                            f"of {init_path.name} to this policy's target channels")
+                    if self.model.obs_encoder.feature_aggregation == 'box_pool':
+                        widened = widen_cond_for_box_pool(
+                            payload['state_dicts'][key], self.model.obs_encoder, target)
+                        accelerator.print(
+                            f"box_pool: widened {widened} {key} conditioning weights "
+                            f"of {init_path.name}")
                 self.load_payload(payload, exclude_keys=['optimizer'], include_keys=())
                 # Force a clean restart of the schedule even though
                 # global_step/epoch were already 0 from __init__.
