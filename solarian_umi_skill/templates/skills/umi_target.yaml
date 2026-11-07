@@ -91,6 +91,9 @@ discard_actions: false
 # same corrected stamps, which a skill-local copy could never give it.
 # Measured by `solarian calibrate-arm` / `calibrate-gripper` /
 # `calibrate-camera-latency`, each writing its own conf/modules/<module>.yaml.
+# Each *_down_sample_steps counts policy steps of history, and a step is
+# policy_dt x execution_speed_scale: training samples history one action step
+# apart, so a slowed replay samples it as much slower.
 camera_down_sample_steps: 1
 arm_down_sample_steps: 1
 gripper_down_sample_steps: 1

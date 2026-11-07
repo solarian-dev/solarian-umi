@@ -14,7 +14,23 @@ def _skill(*, steps_per_inference: int = 16, policy_dt: float = 0.1):
     skill.steps_per_inference = steps_per_inference
     skill.policy_dt = policy_dt
     skill._next_inference_mono = time.monotonic()
+    skill._startup = None
     return skill
+
+
+def test_the_first_chunk_logs_the_start_up_phases_once(caplog):
+    skill = _skill()
+    skill._startup = [("constructed", 0.0), ("first observation", 0.0)]
+    skill._run_inference = lambda: ["wp"]
+
+    with caplog.at_level("INFO", logger="solarian_umi_skill.skill"):
+        skill.control_step(0.1)
+        skill._next_inference_mono = 0.0
+        skill.control_step(0.1)
+
+    (line,) = [r.getMessage() for r in caplog.records if "start-up" in r.getMessage()]
+    assert "first observation" in line and "first step" in line and "first chunk" in line
+    assert skill._startup is None
 
 
 def test_first_control_step_infers_immediately():
@@ -88,9 +104,10 @@ class _FakeBuffer:
         return [SimpleNamespace(t=s) for s in self._stamps[-k:]]
 
 
-def _window_skill(policy_dt: float = 0.1):
+def _window_skill(policy_dt: float = 0.1, execution_speed_scale: float = 1.0):
     skill = UMISkill.__new__(UMISkill)
     skill.policy_dt = policy_dt
+    skill.history_dt = policy_dt * execution_speed_scale
     return skill
 
 
@@ -147,12 +164,118 @@ def test_the_window_never_asks_for_more_than_the_ring_holds():
     assert k == arm.get_max_k
 
 
+def test_a_slowed_replay_reads_a_proportionally_longer_history():
+    skill = _window_skill(policy_dt=0.1, execution_speed_scale=4.0)
+    arm = _FakeBuffer(period=0.02, newest=1000.0)
+
+    k = skill._history_window(arm, lambda o: o.t, 2, 1, 1000.0)
+
+    assert _oldest_read(arm, k) <= 1000.0 - 0.4
+
+
+def test_a_ring_too_short_for_the_history_says_how_big_it_must_be(caplog):
+    """32 samples of a 90 Hz arm is 0.35 s; a 6x replay asks for 0.6 s."""
+    skill = _window_skill(policy_dt=0.1, execution_speed_scale=6.0)
+    arm = _FakeBuffer(period=1 / 90, newest=1000.0)
+
+    with caplog.at_level("WARNING", logger="solarian_umi_skill.skill"):
+        skill._history_window(arm, lambda o: o.t, 2, 1, 1000.0)
+
+    assert "Raise get_max_k" in caplog.text
+
+
+def _stamped(value, t):
+    return SimpleNamespace(value=value, timestamp=t)
+
+
+class _Ring:
+    def __init__(self, samples):
+        self._samples = samples
+
+    def last_k(self, k):
+        return self._samples[-k:]
+
+
+def _obs_skill(*, policy_dt, execution_speed_scale, arm_speed):
+    """Camera at 30 Hz, arm at 100 Hz moving along x at ``arm_speed`` m/s."""
+    skill = _window_skill(policy_dt, execution_speed_scale)
+    skill.params = {"camera": "cam", "arm": "arm", "gripper": "grip"}
+    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    cam = [SimpleNamespace(image=_stamped(frame, 10.0 - i / 30)) for i in range(32)][::-1]
+    arm_t = [10.0 - i * 0.01 for i in range(128)][::-1]
+    arm = [
+        SimpleNamespace(
+            x=_stamped(arm_speed * t, t), y=_stamped(0.0, t), z=_stamped(0.0, t),
+            rx=_stamped(0.0, t), ry=_stamped(0.0, t), rz=_stamped(0.0, t),
+        )
+        for t in arm_t
+    ]
+    grip = [
+        SimpleNamespace(gripper=_stamped(0.0, t), aperture_mm=_stamped(50.0, t))
+        for t in arm_t
+    ]
+    skill.observations = {"cam": _Ring(cam), "arm": _Ring(arm), "grip": _Ring(grip)}
+    skill._camera_window = skill._arm_window = skill._gripper_window = 128
+    skill.camera_horizon, skill.arm_horizon, skill.gripper_horizon = 1, 2, 2
+    skill.camera_down_sample_steps = 1
+    skill.arm_down_sample_steps = skill.gripper_down_sample_steps = 1
+    skill._ensure_camera_remap = lambda size: None
+    skill._camera_obs_extras = lambda hist, frame_hw, remap: {}
+    skill._resize_to_policy = lambda images: images
+    skill._apply_image_masks = lambda images: images
+    skill._obs_width_m = lambda aperture_mm: aperture_mm / 1000.0
+    return skill
+
+
+def test_a_slowed_replay_shows_the_policy_its_training_speed():
+    """Training history is one action step apart. Replayed 4x slower, the arm
+    covers a step's distance in 4 policy_dt, so sampling 1 policy_dt apart
+    would show a quarter of the motion: a hand about to stop and release."""
+    skill = _obs_skill(policy_dt=0.1, execution_speed_scale=4.0, arm_speed=0.05)
+
+    obs = skill.get_umi_obs()
+
+    step = np.diff(obs["robot0_eef_pos"][:, 0])[0]
+    assert step == pytest.approx(0.05 * 0.4, abs=1e-6)
+
+
 def _chunk_skill(*, policy_dt: float = 0.1, execution_speed_scale: float = 1.5):
     skill = UMISkill.__new__(UMISkill)
     skill.policy_dt = policy_dt
     skill.execution_speed_scale = execution_speed_scale
     skill._eval_t_start = 100.0
+    skill._chunk_sent = True
+    skill.arm_action_latency = 0.09
+    skill.gripper_action_latency = 0.05
     return skill
+
+
+def test_the_first_chunk_starts_after_now_instead_of_dropping_its_head():
+    """The arm stood still through the first inference, so the steps between
+    the stale observation and now were never run; dropping them makes the arm
+    dash to the first kept step at its speed cap."""
+    skill = _chunk_skill(policy_dt=0.1, execution_speed_scale=1.5)
+    skill._chunk_sent = False
+    poses = np.arange(16, dtype=np.float64).reshape(16, 1)
+
+    kept, timestamps = skill._prepare_chunk(
+        poses, obs_last_timestamp=10.0, curr_time=10.5
+    )
+
+    np.testing.assert_array_equal(kept.reshape(-1), np.arange(16))
+    # now + arm latency (the larger) + one policy step
+    assert timestamps[0] == pytest.approx(10.5 + 0.09 + 0.1)
+    assert np.diff(timestamps) == pytest.approx(np.full(15, 0.15))
+
+
+def test_a_fresh_first_observation_keeps_the_umi_anchor():
+    skill = _chunk_skill(policy_dt=0.1, execution_speed_scale=1.5)
+    skill._chunk_sent = False
+    poses = np.arange(4, dtype=np.float64).reshape(4, 1)
+
+    _, timestamps = skill._prepare_chunk(poses, obs_last_timestamp=11.0, curr_time=10.5)
+
+    assert timestamps[0] == pytest.approx(11.0)
 
 
 def test_first_action_timestamp_is_the_last_obs_time():

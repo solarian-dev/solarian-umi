@@ -52,7 +52,7 @@ import yaml
 from solarian.core.action import Action, ActionType
 from solarian.core.data import BoundingBoxData, MaskData, PointData
 from solarian.core.execution import ExecutionPlace
-from solarian.core.ai.system1.skill import Skill
+from solarian.core.skill import Skill
 from solarian.core.clock_sync import LatencyEma, synced_time
 from solarian.core.conf_paths import conf_dir, module_config_path, skill_config_path
 from solarian.core.module_yaml import read_module_field
@@ -130,6 +130,62 @@ class UMISkill(Skill):
         #: Per obs key, ``(key, policy-frame target)``: a target changes far
         #: less often than inference runs, and mapping it costs a full-frame warp.
         self._target_cache: dict[str, tuple[tuple, np.ndarray]] = {}
+        #: ``(phase, synced time it ended)`` from construction to the first
+        #: chunk; synced, since construction and setup can be in different
+        #: processes. ``None`` once logged.
+        self._startup: list[tuple[str, float]] | None = [("constructed", synced_time())]
+
+    def _startup_mark(self, phase: str) -> None:
+        if self._startup is None:
+            return
+        self._startup.append((phase, synced_time()))
+        logger.debug("UMISkill start-up: %s at +%.0f ms", phase,
+                     (self._startup[-1][1] - self._startup[0][1]) * 1e3)
+
+    @classmethod
+    def tool_spec(cls, params) -> dict:
+        """The contract of the policy ``params["config"]`` selects, from its yaml's ``agent:`` block.
+
+        A policy runs until stopped, so the block's ``monitor`` questions or its
+        ``max_duration_s`` are what end it. A checkpoint with targets takes a ``point`` in its
+        camera's image, which :meth:`services_for` seeds each target's tracker at.
+        """
+        cfg = cls.load_config_file(skill_config_path(str(params["config"])))
+        agent = cfg.get("agent") or {}
+        spec = super().tool_spec(params)
+        spec.update(
+            description=agent.get("description"),
+            examples=list(agent.get("examples") or []),
+            ends_by_itself=bool(agent.get("ends_by_itself", False)),
+            max_duration_s=agent.get("max_duration_s"),
+            max_target_area=agent.get("max_target_area"),
+            monitor=list(agent.get("monitor") or []),
+            camera=params.get("camera") or cfg.get("camera"),
+        )
+        if cfg.get("targets"):
+            spec["image_points"] = ["point"]
+            spec["parameters"] = {
+                "type": "object",
+                "properties": {
+                    "point": {
+                        "type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2,
+                        "description": agent.get("point") or "[x, y] pixels of the target in the camera image.",
+                    },
+                },
+                "required": ["point"],
+            }
+        return spec
+
+    @classmethod
+    def services_for(cls, params) -> list[tuple[str, str, dict]]:
+        if params.get("point") is None:
+            return []
+        cfg = cls.load_config_file(skill_config_path(str(params["config"])))
+        camera = str(params.get("camera") or cfg["camera"])
+        return [
+            (camera, str(field_name), {"point": list(params["point"])})
+            for field_name in (cfg.get("targets") or {}).values()
+        ]
 
     @classmethod
     def load_config_file(cls, path: pathlib.Path) -> dict:
@@ -164,6 +220,7 @@ class UMISkill(Skill):
         return config
 
     def setup(self):
+        self._startup_mark("setup start")
         cfg = self._load_config()
         self.config = cfg
 
@@ -210,6 +267,7 @@ class UMISkill(Skill):
                 policy_server_url,
             )
             raise
+        self._startup_mark("policy server")
 
         self.obs_pose_repr = model_info.get("obs_pose_repr")
         self.action_pose_repr = model_info.get("action_pose_repr")
@@ -230,6 +288,10 @@ class UMISkill(Skill):
         self.frequency = float(cfg.get("frequency", self.frequency))
         self.policy_dt = 1.0 / self.frequency
         self.execution_speed_scale = float(cfg.get("execution_speed_scale", 1.0))
+        # Training samples history one action step apart, so a replay stretched
+        # by execution_speed_scale must stretch the history too, or the policy
+        # reads its own slowed motion as a hand coming to a stop.
+        self.history_dt = self.policy_dt * self.execution_speed_scale
         self.steps_per_inference = int(cfg.get("steps_per_inference", 6))
         self.discard_actions = bool(cfg.get("discard_actions", False))
 
@@ -284,7 +346,9 @@ class UMISkill(Skill):
         self._dropped_waypoints = 0
 
         self.policy_client.reset()
+        self._startup_mark("policy reset")
         self._wait_for_obs()
+        self._startup_mark("observation history")
 
         # The instant every horizon counts back from, exactly as
         # ``get_umi_obs`` computes it.
@@ -331,12 +395,16 @@ class UMISkill(Skill):
                 axis=-1,
             )[-1]
             self.episode_start_pose.append(pose)
+        self._startup_mark("first observation")
 
         now = synced_time()
         self._eval_t_start = now
         # UMI ``t_start``: inferences land on this monotonic grid every
         # ``steps_per_inference * policy_dt``.
         self._next_inference_mono = time.monotonic()
+        #: Whether the arm has been handed a chunk yet; until then it is
+        #: standing at the observed pose (see ``_prepare_chunk``).
+        self._chunk_sent = False
 
         # UMI eval opens to max_gripper_width (0.09 m) before the first
         # inference. umi-slim SET_HOME is fully open (85 mm), inside that
@@ -525,8 +593,16 @@ class UMISkill(Skill):
         period = float(np.median(intervals)) if intervals.size else 0.0
         if period <= 0.0:
             return buffer.get_max_k
-        oldest_needed = anchor - (horizon - 1) * down_sample * self.policy_dt
+        oldest_needed = anchor - (horizon - 1) * down_sample * self.history_dt
         reach_s = max(0.0, float(stamps[-1]) - oldest_needed)
+        if buffer.get_max_k * period < reach_s:
+            logger.warning(
+                "UMISkill history needs %.2f s but the ring holds %d samples "
+                "(%.2f s); older poses are clamped to the oldest sample. "
+                "Raise get_max_k in that module's yaml to at least %d.",
+                reach_s, buffer.get_max_k, buffer.get_max_k * period,
+                int(np.ceil(2.0 * reach_s / period)) + horizon,
+            )
         return int(min(buffer.get_max_k, np.ceil(2.0 * reach_s / period) + horizon))
 
     @staticmethod
@@ -848,17 +924,17 @@ class UMISkill(Skill):
         camera_obs_timestamps = last_timestamp - (
             np.arange(self.camera_horizon)[::-1]
             * self.camera_down_sample_steps
-            * self.policy_dt
+            * self.history_dt
         )
         arm_obs_timestamps = last_timestamp - (
             np.arange(self.arm_horizon)[::-1]
             * self.arm_down_sample_steps
-            * self.policy_dt
+            * self.history_dt
         )
         gripper_obs_timestamps = last_timestamp - (
             np.arange(self.gripper_horizon)[::-1]
             * self.gripper_down_sample_steps
-            * self.policy_dt
+            * self.history_dt
         )
 
         cam_idxs = [int(np.argmin(np.abs(cam_ts - t))) for t in camera_obs_timestamps]
@@ -1188,6 +1264,8 @@ class UMISkill(Skill):
         grip_n, grip_lead_ms = self._module_chunk(
             action_timestamps, self.gripper_action_latency, now
         )
+        if arm_n:
+            self._chunk_sent = True
         # predict is split because its three parts have nothing to do with
         # each other: encode is this board's CPU, transport is the link and
         # the payload size, model is the far end's GPU.
@@ -1267,17 +1345,25 @@ class UMISkill(Skill):
     ) -> tuple[np.ndarray, np.ndarray]:
         """Timestamp like UMI eval, then drop steps that are already past.
 
-        First action is at ``obs_last_timestamp`` (``arange(len)``). Over
+        First action is at ``obs_last_timestamp`` (``arange(len)``), except
+        for the first chunk of a run, which starts after ``curr_time``. Over
         budget → last pose on the next ``1/frequency`` tick from
         ``_eval_t_start``.
         """
         if len(poses) == 0:
             return poses, np.array([], dtype=np.float64)
 
+        anchor = obs_last_timestamp
+        if not self._chunk_sent:
+            # Valid only because the arm stood still through this inference,
+            # so it is still at the pose the chunk is relative to. Anchored at
+            # the observation, the steps it never ran would be dropped and
+            # the arm would cover them in one dash at its speed cap.
+            lead = max(self.arm_action_latency, self.gripper_action_latency)
+            anchor = max(anchor, curr_time + lead + self.policy_dt)
         dt_execution = self.policy_dt * self.execution_speed_scale
         timestamps = (
-            np.arange(len(poses), dtype=np.float64) * dt_execution
-            + obs_last_timestamp
+            np.arange(len(poses), dtype=np.float64) * dt_execution + anchor
         )
         # 10 ms buffer matches eval_real ``action_exec_latency``, which is
         # honest for a UR5 on RTDE and a floor here: each module's own
@@ -1311,6 +1397,8 @@ class UMISkill(Skill):
         a failed call retries on the next 10 Hz tick instead of going silent
         for a full period.
         """
+        if self._startup is not None and self._startup[-1][0] == "first observation":
+            self._startup_mark("first step")
         if time.monotonic() < self._next_inference_mono:
             return None
         try:
@@ -1318,6 +1406,12 @@ class UMISkill(Skill):
         except Exception:
             logger.exception("UMISkill inference failed")
             return None
+        if self._startup is not None:
+            self._startup_mark("first chunk")
+            logger.info("UMISkill start-up: %s", ", ".join(
+                f"{phase} {(t - before) * 1e3:.0f} ms"
+                for (_, before), (phase, t) in zip(self._startup, self._startup[1:])))
+            self._startup = None
 
         period = self.steps_per_inference * self.policy_dt
         self._next_inference_mono += period
