@@ -207,7 +207,7 @@ The camera serial is read from the GPMF track in the MP4, which both GoPro and L
 
 [Apache License 2.0](LICENSE). Copyright 2026 PrimaryKey Inc. See [NOTICE](NOTICE).
 
-The pipeline and the training code are copied from [Universal Manipulation Interface](https://github.com/real-stanford/universal_manipulation_interface), copyright 2023 Columbia Artificial Intelligence and Robotics Lab, MIT license. The license text is `solarian_umi_skill/slam/LICENSE.umi` and `solarian_umi_skill/diffusion_policy/LICENSE.umi`.
+The pipeline and the training code are copied from [Universal Manipulation Interface](https://github.com/real-stanford/universal_manipulation_interface), copyright 2023 Columbia Artificial Intelligence and Robotics Lab, MIT license. The license text is `solarian_umi_skill/slam/LICENSE.umi` and `solarian_umi_skill/diffusion_policy/LICENSE.umi`. This plugin is maintained independently of the UMI project and is not affiliated with, sponsored by, or endorsed by UMI, its authors, Stanford University, Columbia University or Toyota Research Institute.
 
 ORB-SLAM3 is GPLv3. It runs inside the separate Docker images above and is not part of this package or covered by its license.
 
