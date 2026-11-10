@@ -203,4 +203,12 @@ ORB-SLAM3 runs in Docker image `chicheng/orb_slam3:latest`. GoPro IMU extraction
 
 The camera serial is read from the GPMF track in the MP4, which both GoPro and Lumi write. A GoPro file's start time comes from `creation_time` plus the timecode. A Lumi file muxed without `creation_time` uses the timecode plus the file's modification time.
 
+## License
+
+[Apache License 2.0](LICENSE). Copyright 2026 PrimaryKey Inc. See [NOTICE](NOTICE).
+
 The pipeline and the training code are copied from [Universal Manipulation Interface](https://github.com/real-stanford/universal_manipulation_interface), copyright 2023 Columbia Artificial Intelligence and Robotics Lab, MIT license. The license text is `solarian_umi_skill/slam/LICENSE.umi` and `solarian_umi_skill/diffusion_policy/LICENSE.umi`.
+
+ORB-SLAM3 is GPLv3. It runs inside the separate Docker images above and is not part of this package or covered by its license.
+
+Solarian and the Solarian logo are trademarks of PrimaryKey Inc. See the [trademark policy](https://github.com/solarian-dev/solarian/blob/main/TRADEMARKS.md).

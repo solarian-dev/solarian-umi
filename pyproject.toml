@@ -3,9 +3,11 @@ name = "solarian-umi-skill"
 version = "0.1.0"
 description = "Run and train a UMI diffusion policy. Each task is a yaml in the project's conf/."
 authors = [
-    {name = "Solarian Contributors", email = "solarian@example.com"}
+    {name = "Raul Garreta", email = "raul@solarian.dev"}
 ]
 readme = "README.md"
+license = {text = "Apache-2.0"}
+classifiers = ["License :: OSI Approved :: Apache Software License"]
 requires-python = ">=3.10"
 dependencies = [
     "solarian>=0.1.0",
