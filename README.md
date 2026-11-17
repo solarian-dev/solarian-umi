@@ -1,4 +1,4 @@
-# solarian-umi-skill
+# solarian-umi
 
 Run and train [UMI](https://umi-gripper.github.io/) diffusion policies in Solarian. The policy, the module names, and the motion parameters live in a yaml in the project, not in the skill.
 
@@ -7,23 +7,23 @@ Run and train [UMI](https://umi-gripper.github.io/) diffusion policies in Solari
 From a Solarian project:
 
 ```bash
-solarian install solarian-umi-skill
+solarian install solarian-umi
 ```
 
 That installs the package into the current Python environment, adds it to `pyproject.toml`, and copies every file under `templates/` into the same folder of `conf/` when it is not already there: `conf/skills/umi.yaml`, `conf/skills/umi_target.yaml`, and the training files `conf/training/umi.yaml`, `umi_pick.yaml`, `umi_pick_mask.yaml` and `umi_place.yaml`. An unpublished checkout installs the same way from a path:
 
 ```bash
-solarian install plugins/solarian-umi-skill
+solarian install plugins/solarian-umi
 ```
 
-The policy server this skill calls is `solarian-policy-diffusion`. Install that too if you serve the checkpoint yourself.
+The policy server this skill calls is `solarian-diffusion`. Install that too if you serve the checkpoint yourself.
 
 ## Use
 
 `conf/skills/umi.yaml` is one policy. Copy it for another (`conf/skills/cup_arrange.yaml`, `conf/skills/pick_lego.yaml`) and point each at its own checkpoint. Start the skill with that filename:
 
 ```python
-from solarian_umi_skill import UMISkill
+from solarian_umi import UMISkill
 
 self.start_skill(UMISkill(params={"config": "cup_arrange.yaml"}))
 ```
@@ -33,7 +33,7 @@ self.start_skill(UMISkill(params={"config": "cup_arrange.yaml"}))
 The skill runs on the robot by default; set `execution_place: server` in the file to run it on the relay. On the robot, the controller sends `START_SKILL` with name `umi` and those params. One `UMISkill` runs at a time; a different file restarts it.
 
 Serve the checkpoint named in the file's `server:` block (the
-`diffusion-policy` service, from `solarian-policy-diffusion`):
+`diffusion-policy` service, from `solarian-diffusion`):
 
 ```bash
 solarian run-service cup_arrange
@@ -45,7 +45,7 @@ the server asks for one (a policy hosted on Solarian Base). With
 
 ## Targets: pick and place
 
-A checkpoint can be trained with targets, each an extra input channel over `camera0_rgb` (see [`targets.py`](solarian_umi_skill/targets.py)):
+A checkpoint can be trained with targets, each an extra input channel over `camera0_rgb` (see [`targets.py`](https://github.com/solarian-dev/solarian-umi/blob/main/solarian_umi/targets.py)):
 
 - a box, drawn as a filled rectangle (`obs.bbox`, `bbox_mode: mask_channel`): pick what a SAM 2 tracker boxes;
 - a mask, the object's segmentation (`obs.mask`, `type: mask`): pick a thin or diagonal object;
@@ -92,7 +92,7 @@ conf/training/pick_object.yaml    job_name: pick_object
 conf/skills/pick_object.yaml      server.checkpoint: models/pick_object/checkpoints/latest.ckpt
 ```
 
-Training uses the UMI code copied into this package (MIT, copyright 2023 Columbia Artificial Intelligence and Robotics Lab, [universal_manipulation_interface](https://github.com/real-stanford/universal_manipulation_interface)). Install the training libraries with `pip install "solarian-umi-skill[train]"`. `solarian modal-train` uploads every dataset and checkpoint the file names.
+Training uses the UMI code copied into this package (MIT, copyright 2023 Columbia Artificial Intelligence and Robotics Lab, [universal_manipulation_interface](https://github.com/real-stanford/universal_manipulation_interface)). Install the training libraries with `pip install "solarian-umi[train]"`. `solarian modal-train` uploads every dataset and checkpoint the file names.
 
 ```bash
 solarian train --conf conf/training/cup_arrange
@@ -127,7 +127,7 @@ solarian train --conf conf/training/umi_pick "training.init_from_ckpt='models/pi
 `solarian umi-slam` reads a directory of GoPro or Lumi collector MP4s and writes a training dataset. That dataset is a `task.dataset_mix` entry in a training file. The input is not a `solarian record` session.
 
 ```bash
-pip install "solarian-umi-skill[slam]"
+pip install "solarian-umi[slam]"
 solarian umi-slam datasets/cup_session
 # writes datasets/cup_session/dataset.solarian.zip
 solarian umi-slam datasets/cup_session --format zarr
@@ -156,7 +156,7 @@ dataset.solarian.zip
     targets/camera0.rgb.npz  optional: bbox and/or mask per frame, in video pixels
 ```
 
-The video keeps the full resolution, so tracking and segmentation (SAM 2) can run on it, and it is far smaller than 224x224 JPEG-XL frames. Training decodes each episode once when it starts: tags are inpainted, the gripper is masked and the frame is cropped to the policy resolution, the same steps `--format zarr` bakes into `dataset.zarr.zip`. `task.dataset.cache_dir` (`/tmp/solarian_umi_cache` in the shipped configs) holds the decoded buffer: the first GPU rank decodes into it under a file lock and the others copy the result, and later runs on the same machine reuse it until the session changes. It must be on local disk; `null` decodes in every process. Add `targets/` with `solarian_umi_skill.diffusion_policy.dataset.solarian_session.write_targets(path, episode, bbox=..., mask=...)`, which appends to the zip; a `bbox` or `mask` present in every episode becomes the `bbox` or `mask` array a pick config trains on.
+The video keeps the full resolution, so tracking and segmentation (SAM 2) can run on it, and it is far smaller than 224x224 JPEG-XL frames. Training decodes each episode once when it starts: tags are inpainted, the gripper is masked and the frame is cropped to the policy resolution, the same steps `--format zarr` bakes into `dataset.zarr.zip`. `task.dataset.cache_dir` (`/tmp/solarian_umi_cache` in the shipped configs) holds the decoded buffer: the first GPU rank decodes into it under a file lock and the others copy the result, and later runs on the same machine reuse it until the session changes. It must be on local disk; `null` decodes in every process. Add `targets/` with `solarian_umi.diffusion_policy.dataset.solarian_session.write_targets(path, episode, bbox=..., mask=...)`, which appends to the zip; a `bbox` or `mask` present in every episode becomes the `bbox` or `mask` array a pick config trains on.
 
 `--format zarr` writes the 224x224 `dataset.zarr.zip` instead.
 
@@ -169,7 +169,7 @@ A clip named `mapping.mp4` in the session directory is the mapping video, and on
 1. Each demo's video is remapped into GoPro Max Lens geometry at 1440x1080, black where the Lumi lens does not see. The recording stays beside it as `raw_video_native.mp4`. The camera's calibration comes from `<session>/camera_calibration.json`, else `conf/calibrations/cameras/<serial>.json` in the directory the command runs from.
 2. `imu_data.json` is built from the collector's `.imu.json` sidecars, which keep each sample's time. The GPMF track only has one payload per second.
 3. The camera-to-IMU time offset of each demo and one camera-to-IMU rotation are measured by matching the video's rotation to the gyro. They are written to `<session>/camera_imu.json` and to `demos/mapping/lumi_slam.yaml`, with the GoPro file's IMU noise: the Lumi's MPU-6050 reads about 3.5% over g when still, and trusting its accelerometer more made demos diverge when the camera turned to look straight down. So is the sensor's rolling-shutter readout, measured from how much later the gyro lines up with features lower in the frame (about 22 ms top to bottom on the IMX477). `--rolling-shutter` undoes it in the remap with the gyro's rotation over each frame's readout. It is off by default: on a 148-demo session it kept about ten more demos tracking through medium-speed turns, but about as many of those diverged, and the yield stayed within the spread between maps.
-4. After batch SLAM, `trajectory_report.txt` lists each demo's lost fraction, extent and largest frame-to-frame jump. The pipeline stops before the dataset plan when most demos fail those limits. `python -m solarian_umi_skill.slam.trajectory_check <session>` prints the same report for an existing session.
+4. After batch SLAM, `trajectory_report.txt` lists each demo's lost fraction, extent and largest frame-to-frame jump. The pipeline stops before the dataset plan when most demos fail those limits. `python -m solarian_umi.slam.trajectory_check <session>` prints the same report for an existing session.
 
 ORB-SLAM3 builds a different map each time it runs on the same mapping video, and how many demos track depends mostly on the map: on one 148-demo Lumi session, five maps let 2, 70, 94, 95 and 103 demos through. So the pipeline builds six maps side by side (`run_pipeline.py --map-candidates N`), tracks 24 demos spread over the session on each (`--probe-demos N`), and keeps the map most of them pass on. The other maps stay in `demos/mapping/map_candidates/`, and each candidate's score is in `<session>/map_selection.json`. Good maps are rare: on a 247-demo merge of two sessions, nine new maps passed 13 to 37 of 48 probe demos, against 42 for a map kept from an earlier run, which let 221 demos through where a fresh best of three had let 111. `--map-library DIR` (`solarian umi-slam --map-library DIR`) keeps the best map of each mapping take there. A later run on the same take, such as a merged dataset that shares it, scores that map alongside its new ones, keeps it on a tie, and replaces it only when a new map beats it. A map is tracked with the yaml it was built with, saved beside it as `map_slam_settings.yaml`, not with the session's new fit: on a map built with another camera-to-IMU rotation, 0.85° away cost a fifth of the passing demos and 2.5° nearly all of them. A `demos/mapping/map_atlas.osa` that already exists is used as it is, with the `map_slam_settings.yaml` beside it if there is one. Tracking on a map does not repeat either: of the demos that diverge on one run, most pass on another. So demos with no trajectory, or one that fails the limits, are tracked again on the kept map, up to twice (`--retries N`).
 
@@ -199,15 +199,15 @@ A session recorded with 4 ms exposure (`max_exposure_us: 4000` in the collector 
 
 `--slam-settings PATH` mounts another ORB-SLAM3 yaml instead.
 
-ORB-SLAM3 runs in Docker image `chicheng/orb_slam3:latest`. GoPro IMU extraction runs in `chicheng/openicc:latest`. With `--camera lumi`, ORB-SLAM3 runs in `solariandev/orb_slam3:lumi-inliers15` instead: the same image with the inlier floor for the first second after relocalization lowered from 30 to 15, built from `solarian_umi_skill/slam/Dockerfile.lumi`. The Lumi remap needs `ffmpeg` on the path. If the image is already on this machine, it is used. If it is missing, the command asks before downloading it and running it here.
+ORB-SLAM3 runs in Docker image `chicheng/orb_slam3:latest`. GoPro IMU extraction runs in `chicheng/openicc:latest`. With `--camera lumi`, ORB-SLAM3 runs in `solariandev/orb_slam3:lumi-inliers15` instead: the same image with the inlier floor for the first second after relocalization lowered from 30 to 15, built from `solarian_umi/slam/Dockerfile.lumi`. The Lumi remap needs `ffmpeg` on the path. If the image is already on this machine, it is used. If it is missing, the command asks before downloading it and running it here.
 
 The camera serial is read from the GPMF track in the MP4, which both GoPro and Lumi write. A GoPro file's start time comes from `creation_time` plus the timecode. A Lumi file muxed without `creation_time` uses the timecode plus the file's modification time.
 
 ## License
 
-[Apache License 2.0](LICENSE). Copyright 2026 PrimaryKey Inc. See [NOTICE](NOTICE).
+[Apache License 2.0](https://github.com/solarian-dev/solarian-umi/blob/main/LICENSE). Copyright 2026 PrimaryKey Inc. See [NOTICE](https://github.com/solarian-dev/solarian-umi/blob/main/NOTICE).
 
-The pipeline and the training code are copied from [Universal Manipulation Interface](https://github.com/real-stanford/universal_manipulation_interface), copyright 2023 Columbia Artificial Intelligence and Robotics Lab, MIT license. The license text is `solarian_umi_skill/slam/LICENSE.umi` and `solarian_umi_skill/diffusion_policy/LICENSE.umi`. This plugin is maintained independently of the UMI project and is not affiliated with, sponsored by, or endorsed by UMI, its authors, Stanford University, Columbia University or Toyota Research Institute.
+The pipeline and the training code are copied from [Universal Manipulation Interface](https://github.com/real-stanford/universal_manipulation_interface), copyright 2023 Columbia Artificial Intelligence and Robotics Lab, MIT license. The license text is `solarian_umi/slam/LICENSE.umi` and `solarian_umi/diffusion_policy/LICENSE.umi`. This plugin is maintained independently of the UMI project and is not affiliated with, sponsored by, or endorsed by UMI, its authors, Stanford University, Columbia University or Toyota Research Institute.
 
 ORB-SLAM3 is GPLv3. It runs inside the separate Docker images above and is not part of this package or covered by its license.
 
