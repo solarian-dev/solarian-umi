@@ -6,17 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from solarian_umi_skill.commands.slam import UmiSlamCommand, extract_lumi
-from solarian_umi_skill.slam.docker import (
+from solarian_umi.commands.slam import UmiSlamCommand, extract_lumi
+from solarian_umi.slam.docker import (
     LUMI_ORB_SLAM3_IMAGE,
     OPENICC_IMAGE,
     ORB_SLAM3_IMAGE,
     ensure_image,
 )
-from solarian_umi_skill.slam.run import pipeline_argv, run_session
+from solarian_umi.slam.run import pipeline_argv, run_session
 
 HEADER = "Adapted from Universal Manipulation Interface."
-PACKAGE = Path(__file__).resolve().parents[1] / "solarian_umi_skill"
+PACKAGE = Path(__file__).resolve().parents[1] / "solarian_umi"
 
 
 def test_copied_files_carry_the_umi_attribution():
@@ -108,8 +108,8 @@ def test_a_failed_slam_stage_does_not_write_the_zarr(tmp_path, monkeypatch):
         calls.append((cmd, check))
         return subprocess.CompletedProcess(cmd, 1)
 
-    monkeypatch.setattr("solarian_umi_skill.slam.run.ensure_image", lambda *_a, **_k: None)
-    monkeypatch.setattr("solarian_umi_skill.slam.run.subprocess.run", fake_run)
+    monkeypatch.setattr("solarian_umi.slam.run.ensure_image", lambda *_a, **_k: None)
+    monkeypatch.setattr("solarian_umi.slam.run.subprocess.run", fake_run)
 
     with pytest.raises(SystemExit) as raised:
         run_session(session, session / "dataset.zarr.zip", tmp_path)
@@ -129,9 +129,9 @@ def test_each_camera_asks_only_for_its_images(tmp_path, monkeypatch, camera, ima
     session = tmp_path / "session"
     session.mkdir()
     asked = []
-    monkeypatch.setattr("solarian_umi_skill.slam.run.ensure_image", lambda name, **_k: asked.append(name))
+    monkeypatch.setattr("solarian_umi.slam.run.ensure_image", lambda name, **_k: asked.append(name))
     monkeypatch.setattr(
-        "solarian_umi_skill.slam.run.subprocess.run",
+        "solarian_umi.slam.run.subprocess.run",
         lambda cmd, check=False: subprocess.CompletedProcess(cmd, 1),
     )
 
@@ -156,7 +156,7 @@ def _run_command(monkeypatch, argv):
                       "files": sorted(p.relative_to(session).as_posix()
                                       for p in session.rglob("*") if p.is_file())})
 
-    monkeypatch.setattr("solarian_umi_skill.commands.slam.run_session", fake_run_session)
+    monkeypatch.setattr("solarian_umi.commands.slam.run_session", fake_run_session)
     cmd = UmiSlamCommand()
     cmd.parse_args(argv)
     cmd.handle(None)
@@ -205,10 +205,10 @@ def test_a_zip_without_catalog_is_refused(tmp_path):
 
 def test_missing_image_is_pulled_only_after_yes(monkeypatch):
     pulls = []
-    monkeypatch.setattr("solarian_umi_skill.slam.docker.shutil.which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr("solarian_umi_skill.slam.docker.image_present", lambda _name: False)
+    monkeypatch.setattr("solarian_umi.slam.docker.shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr("solarian_umi.slam.docker.image_present", lambda _name: False)
     monkeypatch.setattr(
-        "solarian_umi_skill.slam.docker.subprocess.run",
+        "solarian_umi.slam.docker.subprocess.run",
         lambda cmd, **_k: pulls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
     )
 
@@ -222,23 +222,23 @@ def test_missing_image_is_pulled_only_after_yes(monkeypatch):
 
 
 def test_missing_image_is_not_pulled_when_declined(monkeypatch):
-    monkeypatch.setattr("solarian_umi_skill.slam.docker.shutil.which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr("solarian_umi_skill.slam.docker.image_present", lambda _name: False)
+    monkeypatch.setattr("solarian_umi.slam.docker.shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr("solarian_umi.slam.docker.image_present", lambda _name: False)
 
     def fail(*_a, **_k):
         raise AssertionError("docker pull should not run")
 
-    monkeypatch.setattr("solarian_umi_skill.slam.docker.subprocess.run", fail)
+    monkeypatch.setattr("solarian_umi.slam.docker.subprocess.run", fail)
     with pytest.raises(SystemExit, match="Not downloading"):
         ensure_image(ORB_SLAM3_IMAGE, input_fn=lambda _prompt: "n")
 
 
 def test_a_present_image_is_not_pulled(monkeypatch):
-    monkeypatch.setattr("solarian_umi_skill.slam.docker.shutil.which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr("solarian_umi_skill.slam.docker.image_present", lambda _name: True)
+    monkeypatch.setattr("solarian_umi.slam.docker.shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr("solarian_umi.slam.docker.image_present", lambda _name: True)
 
     def fail(*_a, **_k):
         raise AssertionError("docker pull should not run")
 
-    monkeypatch.setattr("solarian_umi_skill.slam.docker.subprocess.run", fail)
+    monkeypatch.setattr("solarian_umi.slam.docker.subprocess.run", fail)
     ensure_image(ORB_SLAM3_IMAGE, input_fn=fail)

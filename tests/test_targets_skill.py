@@ -7,8 +7,8 @@ import pytest
 from solarian.core.data import BoundingBoxData, MaskData, PointData
 from solarian.core.execution import ExecutionPlace
 
-from solarian_umi_skill import UMISkill
-from solarian_umi_skill.umi.policy_image import PolicyImagePipeline
+from solarian_umi import UMISkill
+from solarian_umi.umi.policy_image import PolicyImagePipeline
 
 
 def _conf(tmp_path, monkeypatch, text):
@@ -74,7 +74,7 @@ def _checked(tmp_path, monkeypatch, targets, obs_meta, fields, place="server"):
     skill = UMISkill(params={"config": "target.yaml"})
     skill.camera_horizon = 1
     observation = type("Obs", (), {"get_calculated_fields_spec": staticmethod(lambda: fields)})
-    monkeypatch.setattr("solarian_umi_skill.skill.Observation", {"right_wrist_camera": observation()})
+    monkeypatch.setattr("solarian_umi.skill.Observation", {"right_wrist_camera": observation()})
     skill._check_targets({"camera0_rgb": {"horizon": 1, "type": "rgb"}, **obs_meta})
     return skill
 

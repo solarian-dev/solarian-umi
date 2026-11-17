@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "slam" / "scripts" / "00_process_videos.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "solarian_umi" / "slam" / "scripts" / "00_process_videos.py"
 START = datetime.datetime(2026, 10, 14, 18, 0, 0)
 
 

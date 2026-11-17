@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from solarian_umi_skill.slam import map_selection
-from solarian_umi_skill.slam.map_selection import MAP_SETTINGS, mapping_key, probe_demos, select_map
+from solarian_umi.slam import map_selection
+from solarian_umi.slam.map_selection import MAP_SETTINGS, mapping_key, probe_demos, select_map
 
 HEADER = "frame_idx,timestamp,state,is_lost,is_keyframe,x,y,z,q_x,q_y,q_z,q_w\n"
 

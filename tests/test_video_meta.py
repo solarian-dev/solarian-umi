@@ -3,8 +3,8 @@
 import datetime
 from fractions import Fraction
 
-from solarian_umi_skill.slam.support.mp4_meta import _casn_text
-from solarian_umi_skill.slam.support.timecode_util import stream_get_start_datetime
+from solarian_umi.slam.support.mp4_meta import _casn_text
+from solarian_umi.slam.support.timecode_util import stream_get_start_datetime
 
 
 class _Stream:

@@ -7,17 +7,17 @@ import pytest
 import torch
 import zarr
 
-from solarian_umi_skill.diffusion_policy.common.replay_buffer import ReplayBuffer
-from solarian_umi_skill.diffusion_policy.dataset.umi_dataset import UmiDataset
-from solarian_umi_skill.diffusion_policy.model.vision.timm_obs_encoder import (
+from solarian_umi.diffusion_policy.common.replay_buffer import ReplayBuffer
+from solarian_umi.diffusion_policy.dataset.umi_dataset import UmiDataset
+from solarian_umi.diffusion_policy.model.vision.timm_obs_encoder import (
     TimmObsEncoder,
     rasterize_bbox_to_mask,
 )
 from solarian.core.ai.system1.trainer_registry import load_train_config
-from solarian_umi_skill.targets import target_keys
-from solarian_umi_skill.trainer import UmiTrainer, has_target_array
+from solarian_umi.targets import target_keys
+from solarian_umi.trainer import UmiTrainer, has_target_array
 
-TRAINING = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "templates" / "training"
+TRAINING = Path(__file__).resolve().parents[1] / "solarian_umi" / "templates" / "training"
 
 
 def _encoder_meta(target: str) -> dict:

@@ -4,9 +4,9 @@ import cv2
 import numpy as np
 import pytest
 
-from solarian_umi_skill.slam.fisheye_model import Fisheye, build_remap
-from solarian_umi_skill.slam.lumi_imu import ImuTrack, frame_slots, imu_document, read_sidecar, to_video_time
-from solarian_umi_skill.slam.support.cam_imu import (
+from solarian_umi.slam.fisheye_model import Fisheye, build_remap
+from solarian_umi.slam.lumi_imu import ImuTrack, frame_slots, imu_document, read_sidecar, to_video_time
+from solarian_umi.slam.support.cam_imu import (
     CameraRotation,
     _pair_omega,
     estimate_offset,

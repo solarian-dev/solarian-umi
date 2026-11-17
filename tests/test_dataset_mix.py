@@ -7,8 +7,8 @@ import pytest
 import torch
 import zarr
 
-from solarian_umi_skill.diffusion_policy.common.replay_buffer import ReplayBuffer
-from solarian_umi_skill.diffusion_policy.dataset.umi_dataset import UmiDataset, mix_sampler
+from solarian_umi.diffusion_policy.common.replay_buffer import ReplayBuffer
+from solarian_umi.diffusion_policy.dataset.umi_dataset import UmiDataset, mix_sampler
 
 FRAMES = 20
 ACTION_HORIZON = 4

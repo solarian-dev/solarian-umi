@@ -5,9 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from solarian_umi_skill.skill import UMISkill
-from solarian_umi_skill.umi.common.cv2_util import letterbox_to_square
-from solarian_umi_skill.umi.compare_policy_image import (
+from solarian_umi.skill import UMISkill
+from solarian_umi.umi.common.cv2_util import letterbox_to_square
+from solarian_umi.umi.compare_policy_image import (
     describe_pair,
     format_summary,
     write_contact_sheet,
@@ -278,7 +278,7 @@ def _synthetic_gripper(*, dx: int = 0, dy: int = 0) -> np.ndarray:
 
 
 def _synthetic_gripper_polygons(*, dx: int = 0, dy: int = 0):
-    from solarian_umi_skill.umi.gripper_align import RegionPolygons
+    from solarian_umi.umi.gripper_align import RegionPolygons
 
     polys = RegionPolygons()
     for base_x in (28, 154):
@@ -296,7 +296,7 @@ def _synthetic_gripper_polygons(*, dx: int = 0, dy: int = 0):
 
 
 def test_align_metrics_identical_is_full_overlap():
-    from solarian_umi_skill.umi.gripper_align import compute_align_metrics
+    from solarian_umi.umi.gripper_align import compute_align_metrics
 
     gold = _synthetic_gripper()
     polys = _synthetic_gripper_polygons()
@@ -312,7 +312,7 @@ def test_align_metrics_identical_is_full_overlap():
 
 
 def test_policy_pipeline_process_frame_is_224():
-    from solarian_umi_skill.umi.policy_image import PolicyImagePipeline
+    from solarian_umi.umi.policy_image import PolicyImagePipeline
 
     pipe = PolicyImagePipeline(letterbox_to_square=False)
     frame = np.zeros((360, 480, 3), dtype=np.uint8)
@@ -323,7 +323,7 @@ def test_policy_pipeline_process_frame_is_224():
 
 def test_remapped_gopro_frame_is_224_policy_input():
     """Optical remap output (1920x1080) then UMI crop/mask is 224x224."""
-    from solarian_umi_skill.umi.policy_image import PolicyImagePipeline
+    from solarian_umi.umi.policy_image import PolicyImagePipeline
     from solarian.core.optical_remap import (
         apply_optical_remap,
         identity_aligner,
@@ -342,7 +342,7 @@ def test_remapped_gopro_frame_is_224_policy_input():
 
 
 def test_render_contact_sheet_includes_align_lines():
-    from solarian_umi_skill.umi.compare_policy_image import render_contact_sheet
+    from solarian_umi.umi.compare_policy_image import render_contact_sheet
 
     gold = _rgb(224, 224, (10, 10, 10))
     sheet = render_contact_sheet(gold, gold, extra_lines=["Orange fingers: IoU 100.0%"])
@@ -351,7 +351,7 @@ def test_render_contact_sheet_includes_align_lines():
 
 
 def test_align_metrics_shift_lowers_overlap():
-    from solarian_umi_skill.umi.gripper_align import compute_align_metrics
+    from solarian_umi.umi.gripper_align import compute_align_metrics
 
     gold = _synthetic_gripper()
     live = _synthetic_gripper(dx=8, dy=4)
@@ -365,7 +365,7 @@ def test_align_metrics_shift_lowers_overlap():
 
 
 def test_polygon_mask_fills_quad():
-    from solarian_umi_skill.umi.gripper_align import RegionPolygons, polygons_to_mask
+    from solarian_umi.umi.gripper_align import RegionPolygons, polygons_to_mask
 
     polys = RegionPolygons()
     polys.add("orange", [(10, 10), (40, 10), (40, 40), (10, 40)])
@@ -377,7 +377,7 @@ def test_polygon_mask_fills_quad():
 
 
 def test_render_contact_sheet_mask_views():
-    from solarian_umi_skill.umi.compare_policy_image import render_contact_sheet
+    from solarian_umi.umi.compare_policy_image import render_contact_sheet
 
     gold = _synthetic_gripper()
     extra = ["Orange fingers: IoU 100.0%"]
@@ -399,7 +399,7 @@ def test_render_contact_sheet_mask_views():
 
 
 def test_align_polygons_roundtrip(tmp_path):
-    from solarian_umi_skill.umi.gripper_align import (
+    from solarian_umi.umi.gripper_align import (
         RegionPolygons,
         load_align_polygons,
         save_align_polygons,

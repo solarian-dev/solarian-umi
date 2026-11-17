@@ -1,6 +1,6 @@
 import pytest
 
-from solarian_umi_skill.slam.trajectory_check import demo_trajectories, exclude_failed, format_report, gate
+from solarian_umi.slam.trajectory_check import demo_trajectories, exclude_failed, format_report, gate
 
 HEADER = "frame_idx,timestamp,state,is_lost,is_keyframe,x,y,z,q_x,q_y,q_z,q_w\n"
 

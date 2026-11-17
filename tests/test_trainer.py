@@ -14,9 +14,9 @@ from omegaconf import OmegaConf
 from pydantic import ValidationError
 
 from solarian.core.ai.system1.trainer_registry import load_train_config
-from solarian_umi_skill.trainer import SOLARIAN_KEYS, UmiTrainer
+from solarian_umi.trainer import SOLARIAN_KEYS, UmiTrainer
 
-TRAINING = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "templates" / "training"
+TRAINING = Path(__file__).resolve().parents[1] / "solarian_umi" / "templates" / "training"
 TEMPLATES = sorted(p.stem for p in TRAINING.glob("*.yaml"))
 CKPT = "/ckpts/pick-epoch_0170.ckpt"
 
@@ -163,7 +163,7 @@ def _no_training(monkeypatch, started=None):
             raise AssertionError("training should not start")
         started.append(umi_config)
 
-    monkeypatch.setattr("solarian_umi_skill.training.run_training", run)
+    monkeypatch.setattr("solarian_umi.training.run_training", run)
 
 
 @pytest.mark.parametrize("override, message", [

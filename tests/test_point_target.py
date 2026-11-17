@@ -4,21 +4,21 @@ import pytest
 import torch
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
-from solarian_umi_skill.diffusion_policy.model.common.normalizer import (
+from solarian_umi.diffusion_policy.model.common.normalizer import (
     LinearNormalizer,
     SingleFieldLinearNormalizer,
 )
-from solarian_umi_skill.diffusion_policy.model.vision.timm_obs_encoder import (
+from solarian_umi.diffusion_policy.model.vision.timm_obs_encoder import (
     TimmObsEncoder,
     rasterize_bbox_to_mask,
     rasterize_point_to_mask,
     widen_cond_for_box_pool,
     widen_patch_embed,
 )
-from solarian_umi_skill.diffusion_policy.policy.diffusion_unet_timm_policy import (
+from solarian_umi.diffusion_policy.policy.diffusion_unet_timm_policy import (
     DiffusionUnetTimmPolicy,
 )
-from solarian_umi_skill.targets import target_keys
+from solarian_umi.targets import target_keys
 
 BOX = {"shape": [4], "horizon": 1, "type": "low_dim", "bbox_mode": "mask_channel",
        "target_rgb_key": "camera0_rgb"}
@@ -145,7 +145,7 @@ def test_the_place_template_observes_a_pooled_point():
     from hydra import compose, initialize_config_dir
     from solarian.core.ai.system1.trainer_registry import load_train_config
 
-    training = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "templates" / "training"
+    training = Path(__file__).resolve().parents[1] / "solarian_umi" / "templates" / "training"
     with initialize_config_dir(version_base=None, config_dir=str(training)):
         umi = load_train_config(compose(config_name="umi_place"))[2].umi_config()
 

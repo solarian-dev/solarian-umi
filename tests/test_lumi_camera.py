@@ -7,9 +7,9 @@ import cv2
 import numpy as np
 import pytest
 
-from solarian_umi_skill.slam.docker import CONTAINER_SETTINGS, GOPRO_MAXLENS_720, slam_setting_mount
-from solarian_umi_skill.slam.fisheye_model import Fisheye
-from solarian_umi_skill.slam.lumi_camera import (
+from solarian_umi.slam.docker import CONTAINER_SETTINGS, GOPRO_MAXLENS_720, slam_setting_mount
+from solarian_umi.slam.fisheye_model import Fisheye
+from solarian_umi.slam.lumi_camera import (
     MOUNT_PRIOR_R_B_C,
     SLAM_SIZE,
     camera_origin_in_imu_frame,
@@ -17,8 +17,8 @@ from solarian_umi_skill.slam.lumi_camera import (
     slam_mask,
     slam_yaml_text,
 )
-from solarian_umi_skill.slam.lumi_imu import demo_sidecars
-from solarian_umi_skill.slam.run import calibration_dir
+from solarian_umi.slam.lumi_imu import demo_sidecars
+from solarian_umi.slam.run import calibration_dir
 
 
 def test_camera_origin_is_the_measured_mount():
@@ -126,7 +126,7 @@ def test_renamed_clips_get_the_spare_sidecar_of_their_length(tmp_path, monkeypat
         (tmp_path / f"{stem}.imu.json").write_text(json.dumps({"1": {"streams": {"GYRO": {"samples": samples}}}}))
         durations[(tmp_path / "demos" / demo).resolve()] = seconds
     monkeypatch.setattr(
-        "solarian_umi_skill.slam.lumi_imu.video_frame_count",
+        "solarian_umi.slam.lumi_imu.video_frame_count",
         lambda video: (int(durations[video.parent.resolve()] * 30), 30.0),
     )
 

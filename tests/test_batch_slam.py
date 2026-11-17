@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "slam" / "scripts" / "03_batch_slam.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "solarian_umi" / "slam" / "scripts" / "03_batch_slam.py"
 
 
 @pytest.fixture

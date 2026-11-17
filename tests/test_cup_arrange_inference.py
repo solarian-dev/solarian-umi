@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from solarian_umi_skill.skill import UMISkill
+from solarian_umi.skill import UMISkill
 
 
 def _skill(*, steps_per_inference: int = 16, policy_dt: float = 0.1):
@@ -23,7 +23,7 @@ def test_the_first_chunk_logs_the_start_up_phases_once(caplog):
     skill._startup = [("constructed", 0.0), ("first observation", 0.0)]
     skill._run_inference = lambda: ["wp"]
 
-    with caplog.at_level("INFO", logger="solarian_umi_skill.skill"):
+    with caplog.at_level("INFO", logger="solarian_umi.skill"):
         skill.control_step(0.1)
         skill._next_inference_mono = 0.0
         skill.control_step(0.1)
@@ -178,7 +178,7 @@ def test_a_ring_too_short_for_the_history_says_how_big_it_must_be(caplog):
     skill = _window_skill(policy_dt=0.1, execution_speed_scale=6.0)
     arm = _FakeBuffer(period=1 / 90, newest=1000.0)
 
-    with caplog.at_level("WARNING", logger="solarian_umi_skill.skill"):
+    with caplog.at_level("WARNING", logger="solarian_umi.skill"):
         skill._history_window(arm, lambda o: o.t, 2, 1, 1000.0)
 
     assert "Raise get_max_k" in caplog.text

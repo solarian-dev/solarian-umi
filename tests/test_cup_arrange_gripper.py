@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from solarian_umi_skill.skill import UMISkill
+from solarian_umi.skill import UMISkill
 
 
 def _skill():
@@ -70,7 +70,7 @@ def test_publish_gripper_status_uses_mm(monkeypatch):
     def _set(key, value):
         posted[key] = value
 
-    monkeypatch.setattr("solarian_umi_skill.skill.StatusBoard.set", _set)
+    monkeypatch.setattr("solarian_umi.skill.StatusBoard.set", _set)
     skill._publish_gripper_status(obs_width_m=0.08, cmd_width_m=0.04)
     assert posted["UMI gripper obs (mm)"] == 80.0
     assert posted["UMI gripper cmd (mm)"] == 40.0

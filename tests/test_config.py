@@ -1,6 +1,6 @@
 """The yaml named in params is the whole UMISkill config."""
 
-from solarian_umi_skill import UMISkill
+from solarian_umi import UMISkill
 
 
 def test_module_names_come_from_the_config_file(tmp_path, monkeypatch):

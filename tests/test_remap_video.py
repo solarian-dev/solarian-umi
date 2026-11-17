@@ -5,8 +5,8 @@ import av
 import numpy as np
 import pytest
 
-from solarian_umi_skill.slam.fisheye_model import Fisheye, build_remap
-from solarian_umi_skill.slam.remap_video import write_remapped
+from solarian_umi.slam.fisheye_model import Fisheye, build_remap
+from solarian_umi.slam.remap_video import write_remapped
 
 SMALL = Fisheye(fx=58.2, fy=58.2, cx=120.0, cy=90.0, k=(-0.0088, -0.0016, -0.00084, -0.000049), width=240, height=180)
 

@@ -15,8 +15,8 @@ import pytest
 import zarr
 from hydra import compose, initialize_config_dir
 
-from solarian_umi_skill.diffusion_policy.common.replay_buffer import ReplayBuffer
-from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
+from solarian_umi.diffusion_policy.common.replay_buffer import ReplayBuffer
+from solarian_umi.diffusion_policy.dataset.solarian_session import (
     SessionArchive,
     episodes_missing_target,
     has_target,
@@ -24,13 +24,13 @@ from solarian_umi_skill.diffusion_policy.dataset.solarian_session import (
     load_session_replay_buffer,
     write_targets,
 )
-from solarian_umi_skill.diffusion_policy.dataset import umi_dataset
-from solarian_umi_skill.diffusion_policy.dataset.umi_dataset import UmiDataset
+from solarian_umi.diffusion_policy.dataset import umi_dataset
+from solarian_umi.diffusion_policy.dataset.umi_dataset import UmiDataset
 from solarian.core.ai.system1.trainer_registry import load_train_config
-from solarian_umi_skill.slam.support.policy_frame import PolicyFrame
-from solarian_umi_skill.trainer import UmiTrainer, _missing_target_hint, has_target_array
+from solarian_umi.slam.support.policy_frame import PolicyFrame
+from solarian_umi.trainer import UmiTrainer, _missing_target_hint, has_target_array
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "slam" / "scripts"
+SCRIPTS = Path(__file__).resolve().parents[1] / "solarian_umi" / "slam" / "scripts"
 VIDEO_WH = (64, 48)
 OUT_WH = (32, 24)
 FPS = 30
@@ -256,9 +256,9 @@ def test_umi_dataset_and_trainer_take_a_solarian_zip(session, monkeypatch):
     assert not has_target_array(str(session), "mask")
 
     started = []
-    monkeypatch.setattr("solarian_umi_skill.training.run_training",
+    monkeypatch.setattr("solarian_umi.training.run_training",
                         lambda cfg, out: started.append(cfg))
-    training = Path(__file__).resolve().parents[1] / "solarian_umi_skill" / "templates" / "training"
+    training = Path(__file__).resolve().parents[1] / "solarian_umi" / "templates" / "training"
     with initialize_config_dir(version_base=None, config_dir=str(training)):
         composed = compose(config_name="umi", overrides=[f"task.dataset_mix=[{{path:'{session}',weight:1.0}}]"])
     cfg = load_train_config(composed)[2]
@@ -274,7 +274,7 @@ def test_a_cached_session_is_decoded_once(session, tmp_path, monkeypatch):
         raise AssertionError("the cache should be reused")
 
     monkeypatch.setattr(
-        "solarian_umi_skill.diffusion_policy.dataset.umi_dataset.load_session_replay_buffer",
+        "solarian_umi.diffusion_policy.dataset.umi_dataset.load_session_replay_buffer",
         fail)
     second = UmiDataset(shape_meta=_shape_meta(), dataset_path=str(session),
                         cache_dir=str(tmp_path), pose_repr=POSE_REPR)

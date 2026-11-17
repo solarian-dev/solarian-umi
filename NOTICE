@@ -7,8 +7,8 @@ This product includes software developed by PrimaryKey Inc.
 Third-party code
 ================
 
-solarian_umi_skill/slam/
-solarian_umi_skill/diffusion_policy/
+solarian_umi/slam/
+solarian_umi/diffusion_policy/
   Derived from Universal Manipulation Interface
   (https://github.com/real-stanford/universal_manipulation_interface),
   Copyright (c) 2023 Columbia Artificial Intelligence and Robotics Lab,

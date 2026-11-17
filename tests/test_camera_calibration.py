@@ -6,7 +6,7 @@ import pytest
 
 from solarian.core.optical_remap import shipped_checkerboard_path
 
-from solarian_umi_skill.slam.camera_calibration import (
+from solarian_umi.slam.camera_calibration import (
     BoardView,
     StaticMask,
     board_object_points,
@@ -17,7 +17,7 @@ from solarian_umi_skill.slam.camera_calibration import (
     stand_in_from_remap,
     uncovered_cells,
 )
-from solarian_umi_skill.slam.fisheye_model import Fisheye, build_remap
+from solarian_umi.slam.fisheye_model import Fisheye, build_remap
 
 LUMI = Fisheye(
     fx=349.1, fy=349.3, cx=772.6, cy=595.7,

@@ -4,16 +4,16 @@ import pytest
 import torch
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
-from solarian_umi_skill.diffusion_policy.model.common.normalizer import (
+from solarian_umi.diffusion_policy.model.common.normalizer import (
     LinearNormalizer,
     SingleFieldLinearNormalizer,
 )
-from solarian_umi_skill.diffusion_policy.model.vision.timm_obs_encoder import (
+from solarian_umi.diffusion_policy.model.vision.timm_obs_encoder import (
     TimmObsEncoder,
     pool_box_tokens,
     widen_cond_for_box_pool,
 )
-from solarian_umi_skill.diffusion_policy.policy.diffusion_unet_timm_policy import (
+from solarian_umi.diffusion_policy.policy.diffusion_unet_timm_policy import (
     DiffusionUnetTimmPolicy,
 )
 

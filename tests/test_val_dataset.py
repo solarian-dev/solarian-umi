@@ -3,8 +3,8 @@
 import numpy as np
 import zarr
 
-from solarian_umi_skill.diffusion_policy.common.replay_buffer import ReplayBuffer
-from solarian_umi_skill.diffusion_policy.dataset.umi_dataset import UmiDataset
+from solarian_umi.diffusion_policy.common.replay_buffer import ReplayBuffer
+from solarian_umi.diffusion_policy.dataset.umi_dataset import UmiDataset
 
 FRAMES = 40
 ACTION_HORIZON = 4

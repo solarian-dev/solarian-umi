@@ -1,5 +1,5 @@
 [project]
-name = "solarian-umi-skill"
+name = "solarian-umi"
 version = "0.1.0"
 description = "Run and train a UMI diffusion policy. Each task is a yaml in the project's conf/."
 authors = [
@@ -18,17 +18,18 @@ dependencies = [
 ]
 
 [project.entry-points."solarian.skills"]
-umi = "solarian_umi_skill.skill:UMISkill"
+umi = "solarian_umi.skill:UMISkill"
 
 [project.entry-points."solarian.services"]
-umi-policy = "solarian_umi_skill.service:UmiPolicyService"
+umi-policy = "solarian_umi.service:UmiPolicyService"
 
 [project.entry-points."solarian.trainers"]
-umi = "solarian_umi_skill.trainer:UmiTrainer"
+umi = "solarian_umi.trainer:UmiTrainer"
 
 [project.entry-points."solarian.commands"]
-umi-slam = "solarian_umi_skill.commands.slam:UmiSlamCommand"
-umi-calibrate-lumi = "solarian_umi_skill.commands.calibrate_lumi:UmiCalibrateLumiCommand"
+umi-slam = "solarian_umi.commands.slam:UmiSlamCommand"
+umi-calibrate-lumi = "solarian_umi.commands.calibrate_lumi:UmiCalibrateLumiCommand"
+calibrate-umi-camera = "solarian_umi.commands.calibrate_umi_camera:CalibrateUmiCameraCommand"
 
 [project.optional-dependencies]
 slam = [
@@ -64,13 +65,14 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["solarian_umi_skill*"]
+include = ["solarian_umi*"]
 
 [tool.setuptools.package-data]
-solarian_umi_skill = [
+solarian_umi = [
     "templates/skills/*.yaml",
     "templates/training/*.yaml",
     "slam/LICENSE.umi",
     "diffusion_policy/LICENSE.umi",
     "slam/calibration/*",
+    "umi/umi_gold_camera0_rgb_t0.png",
 ]

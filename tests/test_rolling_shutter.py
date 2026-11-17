@@ -1,15 +1,15 @@
 import numpy as np
 import pytest
 
-from solarian_umi_skill.slam.fisheye_model import Fisheye, build_remap
-from solarian_umi_skill.slam.rolling_shutter import (
+from solarian_umi.slam.fisheye_model import Fisheye, build_remap
+from solarian_umi.slam.rolling_shutter import (
     RollingShutter,
     ShutterRemap,
     _rotate,
     estimate_rolling_shutter,
     frame_camera_rates,
 )
-from solarian_umi_skill.slam.support.cam_imu import ROW_BANDS, CameraRotation
+from solarian_umi.slam.support.cam_imu import ROW_BANDS, CameraRotation
 
 SMALL = Fisheye(fx=174.6, fy=174.6, cx=360.0, cy=270.0, k=(-0.0088, -0.0016, -0.00084, -0.000049), width=720, height=540)
 R_B_C = np.array([[0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]])
